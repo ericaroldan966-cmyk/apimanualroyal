@@ -58,6 +58,13 @@ CREATE TABLE IF NOT EXISTS sessions (
   expires_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS ad_spend (
+  day TEXT PRIMARY KEY,
+  usd REAL NOT NULL,
+  fx REAL NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_leads_telefono ON leads(telefono);
 CREATE INDEX IF NOT EXISTS idx_leads_created ON leads(created_at);
 CREATE INDEX IF NOT EXISTS idx_leads_ad_id ON leads(ad_id);
@@ -65,3 +72,4 @@ CREATE INDEX IF NOT EXISTS idx_leads_campaign_id ON leads(campaign_id);
 CREATE INDEX IF NOT EXISTS idx_purchases_ref ON purchases(ref);
 CREATE INDEX IF NOT EXISTS idx_purchases_created ON purchases(created_at);
 CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
+CREATE INDEX IF NOT EXISTS idx_ad_spend_day ON ad_spend(day);

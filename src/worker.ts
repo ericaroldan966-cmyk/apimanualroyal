@@ -7,6 +7,9 @@ import {
   buildStats,
   corsHeaders,
   parseStatsRange,
+  spendWindow,
+  summarizeSpend,
+  isYmd,
   isLocalOrigin,
   isValidRef,
   mergeAttribution,
@@ -351,6 +354,44 @@ export default {
           events_received: meta.events_received,
           lead: publicLead(updated),
         }, origin);
+      }
+
+      if (request.method === 'GET' && url.pathname === '/api/spend') {
+        if (!env.DB) return json(503, { error: 'Base D1 no conectada.' }, origin);
+        const range = parseStatsRange(url.searchParams.get('range'));
+        const window = spendWindow(range);
+        const spendResult = window.from && window.to
+          ? await env.DB.prepare('SELECT day, usd, fx, updated_at FROM ad_spend WHERE day >= ? AND day <= ? ORDER BY day').bind(window.from, window.to).all()
+          : await env.DB.prepare('SELECT day, usd, fx, updated_at FROM ad_spend ORDER BY day').all();
+        const summary = summarizeSpend((spendResult.results || []) as Array<{ day: string; usd: number; fx: number; updated_at: string }>);
+        const current = summary.items.find((row) => row.day === window.editDay);
+        return json(200, {
+          ok: true,
+          range,
+          day: window.editDay,
+          usd: summary.usd,
+          ars: summary.ars,
+          current_usd: current ? current.usd : 0,
+          current_fx: current ? current.fx : 0,
+          items: summary.items,
+        }, origin);
+      }
+
+      if (request.method === 'POST' && url.pathname === '/api/spend') {
+        if (!env.DB) return json(503, { error: 'Base D1 no conectada.' }, origin);
+        const body = await request.json().catch(() => ({})) as Record<string, unknown>;
+        const window = spendWindow(parseStatsRange(body.range));
+        const day = isYmd(body.day) ? String(body.day) : window.editDay;
+        const usd = Number(body.usd);
+        const fx = Number(body.fx);
+        if (!(usd >= 0) || !Number.isFinite(usd)) return json(400, { error: 'Ingresá el gasto en dólares.' }, origin);
+        if (!(fx >= 0) || !Number.isFinite(fx)) return json(400, { error: 'Ingresá la cotización.' }, origin);
+        await env.DB.prepare(`
+          INSERT INTO ad_spend (day, usd, fx, updated_at) VALUES (?, ?, ?, ?)
+          ON CONFLICT(day) DO UPDATE SET usd = excluded.usd, fx = excluded.fx, updated_at = excluded.updated_at
+        `).bind(day, Math.round(usd * 100) / 100, Math.round(fx * 100) / 100, nowIso()).run();
+        const row = await env.DB.prepare('SELECT day, usd, fx, updated_at FROM ad_spend WHERE day = ?').bind(day).first() as { day: string; usd: number; fx: number; updated_at: string };
+        return json(200, { ok: true, ...summarizeSpend([row]), day: row.day, current_usd: row.usd, current_fx: row.fx }, origin);
       }
 
       if (request.method === 'GET' && url.pathname === '/api/stats') {

@@ -12,6 +12,9 @@ import {
   buildStats,
   corsHeaders,
   parseStatsRange,
+  spendWindow,
+  summarizeSpend,
+  isYmd,
   isLocalOrigin,
   isValidRef,
   mergeAttribution,
@@ -371,6 +374,50 @@ const server = http.createServer(async (req, res) => {
         events_received: meta.events_received,
         lead: publicLead(getLead(lead.ref)),
       }, origin);
+      return;
+    }
+
+    if (req.method === 'GET' && url.pathname === '/api/spend') {
+      const range = parseStatsRange(url.searchParams.get('range'));
+      const window = spendWindow(range);
+      const rows = window.from && window.to
+        ? db.prepare('SELECT day, usd, fx, updated_at FROM ad_spend WHERE day >= ? AND day <= ? ORDER BY day').all(window.from, window.to)
+        : db.prepare('SELECT day, usd, fx, updated_at FROM ad_spend ORDER BY day').all();
+      const summary = summarizeSpend(rows as Array<{ day: string; usd: number; fx: number; updated_at: string }>);
+      const current = summary.items.find((row) => row.day === window.editDay);
+      send(res, 200, {
+        ok: true,
+        range,
+        day: window.editDay,
+        usd: summary.usd,
+        ars: summary.ars,
+        current_usd: current ? current.usd : 0,
+        current_fx: current ? current.fx : 0,
+        items: summary.items,
+      }, origin);
+      return;
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/spend') {
+      const body = await readBody(req);
+      const window = spendWindow(parseStatsRange(body.range));
+      const day = isYmd(body.day) ? String(body.day) : window.editDay;
+      const usd = Number(body.usd);
+      const fx = Number(body.fx);
+      if (!(usd >= 0) || !Number.isFinite(usd)) {
+        send(res, 400, { error: 'Ingresá el gasto en dólares.' }, origin);
+        return;
+      }
+      if (!(fx >= 0) || !Number.isFinite(fx)) {
+        send(res, 400, { error: 'Ingresá la cotización.' }, origin);
+        return;
+      }
+      db.prepare(`
+        INSERT INTO ad_spend (day, usd, fx, updated_at) VALUES (?, ?, ?, ?)
+        ON CONFLICT(day) DO UPDATE SET usd = excluded.usd, fx = excluded.fx, updated_at = excluded.updated_at
+      `).run(day, Math.round(usd * 100) / 100, Math.round(fx * 100) / 100, nowIso());
+      const row = db.prepare('SELECT day, usd, fx, updated_at FROM ad_spend WHERE day = ?').get(day) as { day: string; usd: number; fx: number; updated_at: string };
+      send(res, 200, { ok: true, ...summarizeSpend([row]), day: row.day, current_usd: row.usd, current_fx: row.fx }, origin);
       return;
     }
 

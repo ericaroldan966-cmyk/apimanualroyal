@@ -255,6 +255,52 @@ export function parseStatsRange(value: unknown): StatsRange {
   return 'today';
 }
 
+export type SpendRow = {
+  day: string;
+  usd: number;
+  fx: number;
+  updated_at?: string;
+};
+
+export function spendWindow(range: StatsRange): { from: string | null; to: string | null; editDay: string } {
+  const today = arDateParts(new Date());
+  const todayStart = arMidnight(today.y, today.m, today.d);
+  const todayYmd = ymd(today.y, today.m, today.d);
+  const yest = arDateParts(addDays(todayStart, -1));
+  const yestYmd = ymd(yest.y, yest.m, yest.d);
+
+  if (range === 'today') return { from: todayYmd, to: todayYmd, editDay: todayYmd };
+  if (range === 'yesterday') return { from: yestYmd, to: yestYmd, editDay: yestYmd };
+  if (range === '7d') {
+    const from = arDateParts(addDays(todayStart, -6));
+    return { from: ymd(from.y, from.m, from.d), to: todayYmd, editDay: todayYmd };
+  }
+  return { from: null, to: null, editDay: todayYmd };
+}
+
+export function isYmd(value: unknown): value is string {
+  return /^\d{4}-\d{2}-\d{2}$/.test(String(value || ''));
+}
+
+export function summarizeSpend(rows: SpendRow[]) {
+  const items = rows.map((row) => {
+    const usd = Math.round(Number(row.usd || 0) * 100) / 100;
+    const fx = Math.round(Number(row.fx || 0) * 100) / 100;
+    return {
+      day: row.day,
+      usd,
+      fx,
+      ars: Math.round(usd * fx * 100) / 100,
+      updated_at: row.updated_at || '',
+    };
+  });
+  return {
+    usd: Math.round(items.reduce((sum, row) => sum + row.usd, 0) * 100) / 100,
+    ars: Math.round(items.reduce((sum, row) => sum + row.ars, 0) * 100) / 100,
+    items,
+  };
+}
+
 function inWindow(iso: string, from: Date | null, to: Date | null): boolean {
   const time = new Date(iso).getTime();
   if (Number.isNaN(time)) return false;
