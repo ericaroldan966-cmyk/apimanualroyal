@@ -4,7 +4,9 @@ import {
   REF_CHARS,
   asText,
   attributionFromBody,
+  buildStats,
   corsHeaders,
+  parseStatsRange,
   isLocalOrigin,
   isValidRef,
   mergeAttribution,
@@ -349,6 +351,23 @@ export default {
           events_received: meta.events_received,
           lead: publicLead(updated),
         }, origin);
+      }
+
+      if (request.method === 'GET' && url.pathname === '/api/stats') {
+        if (!env.DB) return json(503, { error: 'Base D1 no conectada.' }, origin);
+        const leadResult = await env.DB.prepare(
+          'SELECT ref, lead_enviado, purchase_enviado, lead_sent_at, created_at FROM leads',
+        ).all();
+        const purchaseResult = await env.DB.prepare('SELECT ref, monto, created_at FROM purchases').all();
+        return json(
+          200,
+          buildStats(
+            parseStatsRange(url.searchParams.get('range')),
+            (leadResult.results || []) as LeadRow[],
+            (purchaseResult.results || []) as Array<{ ref: string; monto: number; created_at: string }>,
+          ),
+          origin,
+        );
       }
 
       if (request.method === 'GET' && url.pathname === '/api/purchases') {

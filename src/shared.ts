@@ -198,6 +198,160 @@ export function pickSearchRef(q: string): string {
   return '';
 }
 
+export const AR_TZ = 'America/Argentina/Buenos_Aires';
+
+export type StatsRange = 'today' | 'yesterday' | '7d' | 'all';
+
+export type LeadStatRow = {
+  ref: string;
+  lead_enviado: number | boolean;
+  purchase_enviado: number | boolean;
+  lead_sent_at: string | null;
+  created_at: string;
+};
+
+export type PurchaseStatRow = {
+  ref: string;
+  monto: number;
+  created_at: string;
+};
+
+export type StatsBucket = {
+  key: string;
+  label: string;
+  arrived: number;
+  loaded: number;
+  conversion: number;
+};
+
+function arDateParts(date: Date): { y: number; m: number; d: number; h: number } {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: AR_TZ,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(date);
+  const read = (type: string) => Number(parts.find((part) => part.type === type)?.value || 0);
+  return { y: read('year'), m: read('month'), d: read('day'), h: read('hour') };
+}
+
+function arMidnight(y: number, m: number, d: number): Date {
+  return new Date(Date.UTC(y, m - 1, d, 3, 0, 0));
+}
+
+function addDays(date: Date, days: number): Date {
+  return new Date(date.getTime() + days * 86400000);
+}
+
+function ymd(y: number, m: number, d: number): string {
+  return y + '-' + String(m).padStart(2, '0') + '-' + String(d).padStart(2, '0');
+}
+
+export function parseStatsRange(value: unknown): StatsRange {
+  const text = String(value || 'today');
+  if (text === 'yesterday' || text === '7d' || text === 'all') return text;
+  return 'today';
+}
+
+function inWindow(iso: string, from: Date | null, to: Date | null): boolean {
+  const time = new Date(iso).getTime();
+  if (Number.isNaN(time)) return false;
+  if (from && time < from.getTime()) return false;
+  if (to && time >= to.getTime()) return false;
+  return true;
+}
+
+export function buildStats(range: StatsRange, leads: LeadStatRow[], purchases: PurchaseStatRow[]) {
+  const now = new Date();
+  const today = arDateParts(now);
+  const todayStart = arMidnight(today.y, today.m, today.d);
+  let from: Date | null = todayStart;
+  let to: Date | null = addDays(todayStart, 1);
+  let bucketMode: 'hour' | 'day' = 'hour';
+
+  if (range === 'yesterday') {
+    from = addDays(todayStart, -1);
+    to = todayStart;
+  } else if (range === '7d') {
+    from = addDays(todayStart, -6);
+    to = addDays(todayStart, 1);
+    bucketMode = 'day';
+  } else if (range === 'all') {
+    from = null;
+    to = null;
+    bucketMode = 'day';
+  }
+
+  const arrived = leads.filter((row) => {
+    if (!row.lead_enviado) return false;
+    return inWindow(row.lead_sent_at || row.created_at, from, to);
+  });
+  const loadedCount = arrived.filter((row) => row.purchase_enviado).length;
+  const pending = arrived.length - loadedCount;
+  const periodPurchases = purchases.filter((row) => inWindow(row.created_at, from, to));
+  const totalMonto = periodPurchases.reduce((sum, row) => sum + Number(row.monto || 0), 0);
+  const average = periodPurchases.length ? totalMonto / periodPurchases.length : 0;
+  const conversion = arrived.length ? Math.round((loadedCount / arrived.length) * 1000) / 10 : 0;
+
+  const counts = new Map<string, { arrived: number; loaded: number }>();
+  const touch = (key: string, field: 'arrived' | 'loaded') => {
+    const current = counts.get(key) || { arrived: 0, loaded: 0 };
+    current[field] += 1;
+    counts.set(key, current);
+  };
+
+  for (const row of arrived) {
+    const when = new Date(row.lead_sent_at || row.created_at);
+    const parts = arDateParts(when);
+    const key = bucketMode === 'hour' ? String(parts.h).padStart(2, '0') : ymd(parts.y, parts.m, parts.d);
+    touch(key, 'arrived');
+    if (row.purchase_enviado) touch(key, 'loaded');
+  }
+
+  const buckets: StatsBucket[] = [];
+  if (bucketMode === 'hour' && from && to) {
+    for (let hour = 0; hour < 24; hour++) {
+      const key = String(hour).padStart(2, '0');
+      const current = counts.get(key) || { arrived: 0, loaded: 0 };
+      buckets.push({
+        key,
+        label: key + ':00',
+        arrived: current.arrived,
+        loaded: current.loaded,
+        conversion: current.arrived ? Math.round((current.loaded / current.arrived) * 1000) / 10 : 0,
+      });
+    }
+  } else {
+    const keys = [...counts.keys()].sort();
+    for (const key of keys) {
+      const current = counts.get(key) || { arrived: 0, loaded: 0 };
+      buckets.push({
+        key,
+        label: key,
+        arrived: current.arrived,
+        loaded: current.loaded,
+        conversion: current.arrived ? Math.round((current.loaded / current.arrived) * 1000) / 10 : 0,
+      });
+    }
+  }
+
+  return {
+    ok: true,
+    range,
+    timezone: AR_TZ,
+    arrived: arrived.length,
+    loaded: loadedCount,
+    pending,
+    conversion,
+    average: Math.round(average * 100) / 100,
+    charges: periodPurchases.length,
+    total: Math.round(totalMonto * 100) / 100,
+    buckets,
+  };
+}
+
 export async function sendMetaEvent(
   env: MetaEnv,
   input: {

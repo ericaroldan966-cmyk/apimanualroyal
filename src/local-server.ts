@@ -9,7 +9,9 @@ import {
   PIXEL_ID,
   asText,
   attributionFromBody,
+  buildStats,
   corsHeaders,
+  parseStatsRange,
   isLocalOrigin,
   isValidRef,
   mergeAttribution,
@@ -369,6 +371,25 @@ const server = http.createServer(async (req, res) => {
         events_received: meta.events_received,
         lead: publicLead(getLead(lead.ref)),
       }, origin);
+      return;
+    }
+
+    if (req.method === 'GET' && url.pathname === '/api/stats') {
+      const leads = db.prepare(
+        'SELECT ref, lead_enviado, purchase_enviado, lead_sent_at, created_at FROM leads',
+      ).all() as Array<{
+        ref: string;
+        lead_enviado: number;
+        purchase_enviado: number;
+        lead_sent_at: string | null;
+        created_at: string;
+      }>;
+      const purchases = db.prepare('SELECT ref, monto, created_at FROM purchases').all() as Array<{
+        ref: string;
+        monto: number;
+        created_at: string;
+      }>;
+      send(res, 200, buildStats(parseStatsRange(url.searchParams.get('range')), leads, purchases), origin);
       return;
     }
 
