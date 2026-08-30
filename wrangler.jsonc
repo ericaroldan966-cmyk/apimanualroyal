@@ -1,0 +1,18 @@
+{
+  "name": "ganamos-purchase-capi",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-08-29",
+  "vars": {
+    "PIXEL_ID": "1767312904299608",
+    "LANDING_URL": "https://ericaroldan966-cmyk.github.io/landingappganamos/",
+    "ALLOWED_ORIGIN": "*"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "ganamos-leads",
+      "database_id": "PENDING_D1_DATABASE_ID",
+      "migrations_dir": "migrations"
+    }
+  ]
+}

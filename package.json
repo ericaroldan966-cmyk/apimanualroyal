@@ -1,0 +1,13 @@
+{
+  "name": "ganamos-api",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "node --experimental-strip-types src/local-server.ts",
+    "start": "node --experimental-strip-types src/local-server.ts"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
