@@ -22,7 +22,8 @@ import {
   type LeadRow,
 } from './shared.ts';
 
-const PORT = Number(process.env.LOCAL_API_PORT || 8787);
+const PORT = Number(process.env.PORT || process.env.LOCAL_API_PORT || 8787);
+const HOST = process.env.HOST || '0.0.0.0';
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const API_ROOT = path.resolve(ROOT, '..');
 
@@ -36,7 +37,7 @@ const ENV = {
   PIXEL_ID: process.env.PIXEL_ID || PIXEL_ID,
 };
 
-const dataDir = path.join(API_ROOT, 'data');
+const dataDir = process.env.RAILWAY_VOLUME_MOUNT_PATH || process.env.DATA_DIR || path.join(API_ROOT, 'data');
 if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
 const db = new DatabaseSync(path.join(dataDir, 'local.db'));
 db.exec(fs.readFileSync(path.join(API_ROOT, 'schema.sql'), 'utf8'));
@@ -415,8 +416,9 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, '127.0.0.1', () => {
-  console.log('[API] http://127.0.0.1:' + PORT);
-  if (!ENV.PURCHASE_SEND_KEY) console.log('[API] Falta PURCHASE_SEND_KEY en .dev.vars');
-  if (!ENV.META_ACCESS_TOKEN) console.log('[API] META_ACCESS_TOKEN pendiente en .dev.vars');
+server.listen(PORT, HOST, () => {
+  console.log('[API] http://' + HOST + ':' + PORT);
+  console.log('[API] db ' + path.join(dataDir, 'local.db'));
+  if (!ENV.PURCHASE_SEND_KEY) console.log('[API] Falta PURCHASE_SEND_KEY');
+  if (!ENV.META_ACCESS_TOKEN) console.log('[API] META_ACCESS_TOKEN pendiente');
 });
