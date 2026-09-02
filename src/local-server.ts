@@ -320,11 +320,7 @@ const server = http.createServer(async (req, res) => {
         send(res, 400, { error: 'Monto inválido.' }, origin);
         return;
       }
-      if (lead.purchase_enviado && !force) {
-        console.log('[purchase] Purchase duplicado bloqueado');
-        send(res, 409, { error: 'Este REF ya tiene una compra registrada.', lead: publicLead(lead) }, origin);
-        return;
-      }
+      const alreadyHadPurchase = Boolean(lead.purchase_enviado);
       const eventId = 'purchase_' + lead.ref + '_' + Date.now().toString(36);
       const meta = await sendMetaEvent(ENV, {
         event_name: 'Purchase',
@@ -349,7 +345,7 @@ const server = http.createServer(async (req, res) => {
         meta.events_received == null ? null : meta.events_received,
         meta.ok ? 'ok' : 'error',
         meta.ok ? null : (meta.error || 'Error Meta API'),
-        force ? 1 : 0,
+        (force || alreadyHadPurchase) ? 1 : 0,
       );
       if (!meta.ok) {
         db.prepare('UPDATE leads SET updated_at = ?, purchase_meta_error = ? WHERE ref = ?').run(created, meta.error, lead.ref);

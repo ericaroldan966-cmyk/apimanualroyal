@@ -297,10 +297,7 @@ export default {
           console.log('[purchase] REF no encontrado');
           return json(404, { error: 'REF no encontrado.' }, origin);
         }
-        if (lead.purchase_enviado && !force) {
-          console.log('[purchase] Purchase duplicado bloqueado');
-          return json(409, { error: 'Este REF ya tiene una compra registrada.', lead: publicLead(lead) }, origin);
-        }
+        const alreadyHadPurchase = Boolean(lead.purchase_enviado);
         const eventId = 'purchase_' + lead.ref + '_' + Date.now().toString(36);
         const meta = await sendMetaEvent({
           META_ACCESS_TOKEN: env.META_ACCESS_TOKEN,
@@ -329,7 +326,7 @@ export default {
           meta.events_received == null ? null : meta.events_received,
           meta.ok ? 'ok' : 'error',
           meta.ok ? null : (meta.error || 'Error Meta API'),
-          force ? 1 : 0,
+          (force || alreadyHadPurchase) ? 1 : 0,
         ).run();
         if (!meta.ok) {
           await env.DB.prepare('UPDATE leads SET updated_at = ?, purchase_meta_error = ? WHERE ref = ?').bind(created, meta.error || 'Error Meta API', lead.ref).run();
