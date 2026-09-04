@@ -192,9 +192,11 @@ export function isValidRef(ref: string): boolean {
 }
 
 export function pickSearchRef(q: string): string {
-  const upper = q.toUpperCase();
-  if (upper.startsWith('REF-')) return upper;
-  if (/^[A-Z0-9]{6,12}$/.test(upper)) return 'REF-' + upper;
+  const compact = String(q || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  if (compact.startsWith('REF') && compact.length >= 9 && compact.length <= 15) {
+    return 'REF-' + compact.slice(3);
+  }
+  if (/^[A-Z0-9]{6,12}$/.test(compact)) return 'REF-' + compact;
   return '';
 }
 
