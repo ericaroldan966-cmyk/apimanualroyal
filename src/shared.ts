@@ -68,6 +68,7 @@ export type PublicLead = {
 
 export type MetaEnv = {
   META_ACCESS_TOKEN: string;
+  META_ACCESS_TOKEN_2?: string;
   META_TEST_EVENT_CODE?: string;
   PIXEL_ID?: string;
   PIXEL_ID_2?: string;
@@ -194,9 +195,17 @@ export function isValidRef(ref: string): boolean {
 }
 
 export function pickSearchRef(q: string): string {
-  const compact = String(q || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const raw = String(q || '').toUpperCase();
+  const matches = raw.match(/REF[\s\-]*[A-Z0-9]{6,12}/g);
+  if (matches && matches.length) {
+    const last = matches[matches.length - 1].replace(/[^A-Z0-9]/g, '');
+    const next = 'REF-' + last.slice(3);
+    if (isValidRef(next)) return next;
+  }
+  const compact = raw.replace(/[^A-Z0-9]/g, '');
   if (compact.startsWith('REF') && compact.length >= 9 && compact.length <= 15) {
-    return 'REF-' + compact.slice(3);
+    const next = 'REF-' + compact.slice(3);
+    return isValidRef(next) ? next : '';
   }
   if (/^[A-Z0-9]{6,12}$/.test(compact)) return 'REF-' + compact;
   return '';
@@ -412,8 +421,16 @@ export async function sendMetaEvent(
     custom_data: Record<string, unknown>;
   },
 ): Promise<{ ok: boolean; error?: string; events_received?: number; fbtrace_id?: string }> {
-  if (!env.META_ACCESS_TOKEN) {
+  const token1 = String(env.META_ACCESS_TOKEN || '').trim();
+  const token2 = String(env.META_ACCESS_TOKEN_2 || '').trim();
+  const pixel1 = String(env.PIXEL_ID || PIXEL_ID || '').trim();
+  const pixel2 = String(env.PIXEL_ID_2 || PIXEL_ID_2 || '').trim();
+
+  if (!token1) {
     return { ok: false, error: 'Falta el Access Token. Pegalo en .dev.vars y reiniciá.' };
+  }
+  if (!/^\d{5,20}$/.test(pixel1)) {
+    return { ok: false, error: 'Falta PIXEL_ID.' };
   }
 
   const payload: Record<string, unknown> = {
@@ -431,23 +448,14 @@ export async function sendMetaEvent(
   };
   if (env.META_TEST_EVENT_CODE) payload.test_event_code = env.META_TEST_EVENT_CODE;
 
-  const ids: string[] = [];
-  for (const value of [env.PIXEL_ID || PIXEL_ID, env.PIXEL_ID_2 || PIXEL_ID_2]) {
-    const id = String(value || '').trim();
-    if (/^\d{5,20}$/.test(id) && !ids.includes(id)) ids.push(id);
-  }
-  if (!ids.length) {
-    return { ok: false, error: 'Falta PIXEL_ID.' };
-  }
-
-  const sendToPixel = async (pixelId: string) => {
+  const sendToPixel = async (pixelId: string, token: string, label: string) => {
     const graphUrl =
       'https://graph.facebook.com/' +
       GRAPH_VERSION +
       '/' +
       pixelId +
       '/events?access_token=' +
-      encodeURIComponent(env.META_ACCESS_TOKEN);
+      encodeURIComponent(token);
     try {
       const response = await fetch(graphUrl, {
         method: 'POST',
@@ -462,20 +470,28 @@ export async function sendMetaEvent(
         data = { error: { message: 'Respuesta inválida de Meta.' } };
       }
       if (!response.ok || (data.error && data.error.message)) {
-        console.log('[meta] Error Meta API');
-        return { ok: false, error: (data.error && data.error.message) || 'Error de Meta' };
+        const message = (data.error && data.error.message) || ('Error de Meta HTTP ' + response.status);
+        console.log('[meta] Error ' + label + ' ' + pixelId + ': ' + message);
+        return { ok: false, error: message };
       }
       return { ok: true, events_received: data.events_received, fbtrace_id: data.fbtrace_id };
-    } catch {
-      console.log('[meta] Error Meta API');
-      return { ok: false, error: 'Error de Meta' };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Error de Meta';
+      console.log('[meta] Error ' + label + ' ' + pixelId + ': ' + message);
+      return { ok: false, error: message };
     }
   };
 
-  const primary = await sendToPixel(ids[0]);
-  for (const pixelId of ids.slice(1)) {
-    const copy = await sendToPixel(pixelId);
-    if (!copy.ok) console.log('[meta] Error pixel 2');
+  const primary = await sendToPixel(pixel1, token1, 'pixel 1');
+
+  if (/^\d{5,20}$/.test(pixel2) && pixel2 !== pixel1) {
+    if (!token2) {
+      console.log('[meta] Pixel 2 ' + pixel2 + ' omitido: falta META_ACCESS_TOKEN_2');
+    } else {
+      const copy = await sendToPixel(pixel2, token2, 'pixel 2');
+      if (copy.ok) console.log('[meta] Pixel 2 ok ' + pixel2 + ' ' + input.event_name);
+    }
   }
+
   return primary;
 }

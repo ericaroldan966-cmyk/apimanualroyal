@@ -26,6 +26,7 @@ import {
 type Env = {
   DB: D1Database;
   META_ACCESS_TOKEN?: string;
+  META_ACCESS_TOKEN_2?: string;
   PURCHASE_SEND_KEY?: string;
   META_TEST_EVENT_CODE?: string;
   PIXEL_ID?: string;
@@ -76,16 +77,18 @@ async function sha256(value: unknown): Promise<string | null> {
 }
 
 function rateLimited(ip: string): boolean {
-  const key = ip || 'unknown';
+  if (!ip) return false;
   const now = Date.now();
-  const current = (hits.get(key) || []).filter((time) => now - time < 15 * 60 * 1000);
+  const current = (hits.get(ip) || []).filter((time) => now - time < 15 * 60 * 1000);
   current.push(now);
-  hits.set(key, current);
-  return current.length > 40;
+  hits.set(ip, current);
+  return current.length > 200;
 }
 
 function clientIp(request: Request): string {
-  return request.headers.get('CF-Connecting-IP') || '';
+  const forwarded = request.headers.get('x-forwarded-for') || '';
+  const first = forwarded.split(',')[0].trim();
+  return first || request.headers.get('x-real-ip') || request.headers.get('CF-Connecting-IP') || '';
 }
 
 function landingUrl(env: Env): string {
@@ -171,7 +174,9 @@ async function buildUserData(lead: LeadRow, extras: { client_ip_address?: string
 
 async function readJson(request: Request): Promise<Record<string, unknown>> {
   try {
-    return await request.json() as Record<string, unknown>;
+    const text = await request.text();
+    if (!text) return {};
+    return JSON.parse(text) as Record<string, unknown>;
   } catch {
     return {};
   }
@@ -192,6 +197,7 @@ export default {
           ok: true,
           pixel_id: env.PIXEL_ID || PIXEL_ID,
           token_configured: Boolean(env.META_ACCESS_TOKEN),
+          token_2_configured: Boolean(env.META_ACCESS_TOKEN_2),
           send_key_configured: Boolean(env.PURCHASE_SEND_KEY),
           db: Boolean(env.DB),
         }, origin);
@@ -201,6 +207,7 @@ export default {
         if (!env.DB) return json(503, { error: 'Base D1 no conectada.' }, origin);
         if (rateLimited(clientIp(request))) return json(429, { error: 'Demasiados intentos.' }, origin);
         const body = await readJson(request);
+        if (!Object.keys(body).length) return json(400, { error: 'Cuerpo inválido.' }, origin);
         const lead = await upsertVisit(env.DB, body.ref, attributionFromBody(body));
         console.log('[visit] Lead guardado');
         return json(200, { ok: true, ref: lead.ref, status: lead.status }, origin);
@@ -210,6 +217,7 @@ export default {
         if (!env.DB) return json(503, { error: 'Base D1 no conectada.' }, origin);
         if (rateLimited(clientIp(request))) return json(429, { error: 'Demasiados intentos.' }, origin);
         const body = await readJson(request);
+        if (!Object.keys(body).length) return json(400, { error: 'Cuerpo inválido.' }, origin);
         const lead = await upsertVisit(env.DB, body.ref, attributionFromBody(body));
         const eventId = asText(body.event_id, 80) || ('lead_' + lead.ref);
         if (lead.lead_enviado) {
@@ -218,6 +226,7 @@ export default {
         }
         const meta = await sendMetaEvent({
           META_ACCESS_TOKEN: env.META_ACCESS_TOKEN || '',
+          META_ACCESS_TOKEN_2: env.META_ACCESS_TOKEN_2 || '',
           META_TEST_EVENT_CODE: env.META_TEST_EVENT_CODE,
           PIXEL_ID: env.PIXEL_ID,
           PIXEL_ID_2: env.PIXEL_ID_2 || PIXEL_ID_2,
@@ -269,7 +278,7 @@ export default {
 
       if (request.method === 'GET' && url.pathname === '/api/search') {
         if (!env.DB) return json(503, { error: 'Base D1 no conectada.' }, origin);
-        const q = asText(url.searchParams.get('q'), 80);
+        const q = asText(url.searchParams.get('q'), 300);
         if (!q) return json(400, { error: 'Escribí un REF o un teléfono.' }, origin);
         let row = null;
         const searchRef = pickSearchRef(q);
@@ -290,7 +299,7 @@ export default {
         if (!env.DB) return json(503, { error: 'Base D1 no conectada.' }, origin);
         if (!env.META_ACCESS_TOKEN) return json(503, { error: 'Falta el Access Token. Pegalo en .dev.vars y reiniciá.' }, origin);
         const body = await readJson(request);
-        const ref = asText(body.ref, 20).toUpperCase();
+        const ref = pickSearchRef(asText(body.ref, 300)) || asText(body.ref, 20).toUpperCase();
         const monto = Number(body.monto);
         const force = Boolean(body.force);
         if (!ref) return json(400, { error: 'Falta el REF.' }, origin);
@@ -309,6 +318,7 @@ export default {
         const purchaseCustom = { currency: 'ARS', value: Number(monto.toFixed(2)), order_id: lead.ref };
         const metaEnv = {
           META_ACCESS_TOKEN: env.META_ACCESS_TOKEN,
+          META_ACCESS_TOKEN_2: env.META_ACCESS_TOKEN_2 || '',
           META_TEST_EVENT_CODE: env.META_TEST_EVENT_CODE,
           PIXEL_ID: env.PIXEL_ID,
           PIXEL_ID_2: env.PIXEL_ID_2 || PIXEL_ID_2,

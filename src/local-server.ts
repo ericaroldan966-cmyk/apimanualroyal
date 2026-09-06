@@ -38,6 +38,7 @@ loadDotEnv(path.join(API_ROOT, '.env'));
 
 const ENV = {
   META_ACCESS_TOKEN: process.env.META_ACCESS_TOKEN || '',
+  META_ACCESS_TOKEN_2: process.env.META_ACCESS_TOKEN_2 || '',
   PURCHASE_SEND_KEY: process.env.PURCHASE_SEND_KEY || '',
   META_TEST_EVENT_CODE: process.env.META_TEST_EVENT_CODE || '',
   PIXEL_ID: process.env.PIXEL_ID || PIXEL_ID,
@@ -204,6 +205,7 @@ const server = http.createServer(async (req, res) => {
         ok: true,
         pixel_id: ENV.PIXEL_ID,
         token_configured: Boolean(ENV.META_ACCESS_TOKEN),
+        token_2_configured: Boolean(ENV.META_ACCESS_TOKEN_2),
         send_key_configured: Boolean(ENV.PURCHASE_SEND_KEY),
         db: true,
       }, origin);
@@ -212,6 +214,10 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === 'POST' && url.pathname === '/api/visit') {
       const body = await readBody(req);
+      if (!Object.keys(body).length) {
+        send(res, 400, { error: 'Cuerpo inválido.' }, origin);
+        return;
+      }
       const lead = upsertVisit(body.ref, attributionFromBody(body));
       console.log('[visit] Lead guardado');
       send(res, 200, { ok: true, ref: lead.ref, status: lead.status }, origin);
@@ -220,6 +226,10 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === 'POST' && url.pathname === '/api/lead') {
       const body = await readBody(req);
+      if (!Object.keys(body).length) {
+        send(res, 400, { error: 'Cuerpo inválido.' }, origin);
+        return;
+      }
       const lead = upsertVisit(body.ref, attributionFromBody(body));
       const eventId = asText(body.event_id, 80) || ('lead_' + lead.ref);
       if (lead.lead_enviado) {
@@ -281,7 +291,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === 'GET' && url.pathname === '/api/search') {
-      const q = asText(url.searchParams.get('q'), 80);
+      const q = asText(url.searchParams.get('q'), 300);
       if (!q) {
         send(res, 400, { error: 'Escribí un REF o un teléfono.' }, origin);
         return;
@@ -309,7 +319,7 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       const body = await readBody(req);
-      const ref = asText(body.ref, 20).toUpperCase();
+      const ref = pickSearchRef(asText(body.ref, 300)) || asText(body.ref, 20).toUpperCase();
       const monto = Number(body.monto);
       const force = Boolean(body.force);
       const lead = getLead(ref);
@@ -498,4 +508,5 @@ server.listen(PORT, HOST, () => {
   console.log('[API] db ' + path.join(dataDir, 'local.db'));
   if (!ENV.PURCHASE_SEND_KEY) console.log('[API] Falta PURCHASE_SEND_KEY');
   if (!ENV.META_ACCESS_TOKEN) console.log('[API] META_ACCESS_TOKEN pendiente');
+  if (!ENV.META_ACCESS_TOKEN_2) console.log('[API] META_ACCESS_TOKEN_2 pendiente');
 });
