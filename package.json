@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "node --experimental-strip-types src/local-server.ts",
-    "start": "node --experimental-strip-types src/local-server.ts"
+    "start": "node --experimental-strip-types src/local-server.ts",
+    "test": "node --experimental-strip-types src/send-meta-event.test.ts"
   },
   "engines": {
     "node": ">=22"

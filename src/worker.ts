@@ -203,6 +203,7 @@ export default {
         return json(200, {
           ok: true,
           pixel_id: env.PIXEL_ID || PIXEL_ID,
+          pixel_id_2: env.PIXEL_ID_2 || PIXEL_ID_2,
           token_configured: Boolean(env.META_ACCESS_TOKEN),
           token_2_configured: Boolean(env.META_ACCESS_TOKEN_2),
           send_key_configured: Boolean(env.PURCHASE_SEND_KEY),
@@ -323,7 +324,9 @@ export default {
 
       if (request.method === 'POST' && url.pathname === '/api/purchase') {
         if (!env.DB) return json(503, { error: 'Base D1 no conectada.' }, origin);
-        if (!env.META_ACCESS_TOKEN) return json(503, { error: 'Falta el Access Token. Pegalo en .dev.vars y reiniciá.' }, origin);
+        if (!env.META_ACCESS_TOKEN && !env.META_ACCESS_TOKEN_2) {
+          return json(503, { error: 'Falta META_ACCESS_TOKEN o META_ACCESS_TOKEN_2.' }, origin);
+        }
         const body = await readJson(request);
         const ref = pickSearchRef(asText(body.ref, 300)) || asText(body.ref, 20).toUpperCase();
         const monto = Number(body.monto);
@@ -356,15 +359,13 @@ export default {
           user_data: purchaseUserData,
           custom_data: purchaseCustom,
         });
-        if (meta.ok) {
-          await sendMetaEvent(metaEnv, {
-            event_name: 'InitiateCheckout',
-            event_id: 'ic_' + lead.ref + '_' + Date.now().toString(36),
-            event_source_url: landingUrl(env),
-            user_data: purchaseUserData,
-            custom_data: purchaseCustom,
-          });
-        }
+        await sendMetaEvent(metaEnv, {
+          event_name: 'InitiateCheckout',
+          event_id: 'ic_' + lead.ref + '_' + Date.now().toString(36),
+          event_source_url: landingUrl(env),
+          user_data: purchaseUserData,
+          custom_data: purchaseCustom,
+        });
         const created = nowIso();
         await env.DB.prepare(`
           INSERT INTO purchases (

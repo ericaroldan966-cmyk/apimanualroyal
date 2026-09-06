@@ -218,6 +218,7 @@ const server = http.createServer(async (req, res) => {
       send(res, 200, {
         ok: true,
         pixel_id: ENV.PIXEL_ID,
+        pixel_id_2: ENV.PIXEL_ID_2,
         token_configured: Boolean(ENV.META_ACCESS_TOKEN),
         token_2_configured: Boolean(ENV.META_ACCESS_TOKEN_2),
         send_key_configured: Boolean(ENV.PURCHASE_SEND_KEY),
@@ -341,8 +342,8 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === 'POST' && url.pathname === '/api/purchase') {
-      if (!ENV.META_ACCESS_TOKEN) {
-        send(res, 503, { error: 'Falta el Access Token. Pegalo en .dev.vars y reiniciá.' }, origin);
+      if (!ENV.META_ACCESS_TOKEN && !ENV.META_ACCESS_TOKEN_2) {
+        send(res, 503, { error: 'Falta META_ACCESS_TOKEN o META_ACCESS_TOKEN_2.' }, origin);
         return;
       }
       const body = await readBody(req);
@@ -373,15 +374,13 @@ const server = http.createServer(async (req, res) => {
         user_data: purchaseUserData,
         custom_data: purchaseCustom,
       });
-      if (meta.ok) {
-        await sendMetaEvent(ENV, {
-          event_name: 'InitiateCheckout',
-          event_id: 'ic_' + lead.ref + '_' + Date.now().toString(36),
-          event_source_url: DEFAULT_LANDING_URL,
-          user_data: purchaseUserData,
-          custom_data: purchaseCustom,
-        });
-      }
+      await sendMetaEvent(ENV, {
+        event_name: 'InitiateCheckout',
+        event_id: 'ic_' + lead.ref + '_' + Date.now().toString(36),
+        event_source_url: DEFAULT_LANDING_URL,
+        user_data: purchaseUserData,
+        custom_data: purchaseCustom,
+      });
       const created = nowIso();
       db.prepare(`
         INSERT INTO purchases (
@@ -534,6 +533,8 @@ server.listen(PORT, HOST, () => {
   console.log('[API] http://' + HOST + ':' + PORT);
   console.log('[API] db ' + path.join(dataDir, 'local.db'));
   if (!ENV.PURCHASE_SEND_KEY) console.log('[API] Falta PURCHASE_SEND_KEY');
+  if (!ENV.PIXEL_ID) console.log('[META][ROYAL] Falta PIXEL_ID');
+  if (!ENV.PIXEL_ID_2) console.log('[META][ROYAL] Falta PIXEL_ID_2');
   if (!ENV.META_ACCESS_TOKEN) console.log('[API] META_ACCESS_TOKEN pendiente');
   if (!ENV.META_ACCESS_TOKEN_2) console.log('[API] META_ACCESS_TOKEN_2 pendiente');
 });
