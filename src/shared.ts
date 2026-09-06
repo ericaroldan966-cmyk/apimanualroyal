@@ -195,7 +195,7 @@ export function isValidRef(ref: string): boolean {
 }
 
 export function pickSearchRef(q: string): string {
-  const raw = String(q || '').toUpperCase();
+  const raw = String(q || '').trim().toUpperCase();
   const matches = raw.match(/REF[\s\-]*[A-Z0-9]{6,12}/g);
   if (matches && matches.length) {
     const last = matches[matches.length - 1].replace(/[^A-Z0-9]/g, '');
@@ -209,6 +209,10 @@ export function pickSearchRef(q: string): string {
   }
   if (/^[A-Z0-9]{6,12}$/.test(compact)) return 'REF-' + compact;
   return '';
+}
+
+export function normalizeRef(q: string): string {
+  return pickSearchRef(q);
 }
 
 export const AR_TZ = 'America/Argentina/Buenos_Aires';

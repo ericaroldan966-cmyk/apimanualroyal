@@ -12,7 +12,6 @@ import {
   summarizeSpend,
   isYmd,
   isLocalOrigin,
-  isValidRef,
   mergeAttribution,
   normalizePhone,
   nowIso,
@@ -145,17 +144,24 @@ async function updateAttribution(db: D1Database, ref: string, attr: Attribution)
 }
 
 async function upsertVisit(db: D1Database, requestedRef: unknown, incoming: Attribution): Promise<LeadRow> {
-  let ref = asText(requestedRef, 20).toUpperCase();
-  if (ref && !isValidRef(ref)) ref = '';
-  if (ref) {
-    const existing = await getLead(db, ref);
-    if (existing) return updateAttribution(db, ref, mergeAttribution(existing, incoming));
-    return insertLead(db, ref, incoming, 'VISIT');
+  const requested = pickSearchRef(String(requestedRef || ''));
+  if (requested) {
+    const existing = await getLead(db, requested);
+    if (existing) {
+      const updated = await updateAttribution(db, requested, mergeAttribution(existing, incoming));
+      console.log('[ROYAL][REF]', 'persisted', updated.ref);
+      return updated;
+    }
   }
-  for (let i = 0; i < 5; i++) {
+  for (let i = 0; i < 8; i++) {
     const next = makeRef();
     const exists = await getLead(db, next);
-    if (!exists) return insertLead(db, next, incoming, 'VISIT');
+    if (!exists) {
+      console.log('[ROYAL][REF]', 'created', next);
+      const row = await insertLead(db, next, incoming, 'VISIT');
+      console.log('[ROYAL][REF]', 'persisted', next);
+      return row;
+    }
   }
   throw new Error('No se pudo generar REF.');
 }
@@ -210,6 +216,7 @@ export default {
         const body = await readJson(request);
         if (!Object.keys(body).length) return json(400, { error: 'Cuerpo inválido.' }, origin);
         const lead = await upsertVisit(env.DB, body.ref, attributionFromBody(body));
+        console.log('[ROYAL][REF]', 'returned to landing', lead.ref);
         void sendMetaEvent({
           META_ACCESS_TOKEN: env.META_ACCESS_TOKEN || '',
           META_ACCESS_TOKEN_2: env.META_ACCESS_TOKEN_2 || '',
@@ -299,6 +306,7 @@ export default {
         if (!q) return json(400, { error: 'Escribí un REF o un teléfono.' }, origin);
         let row = null;
         const searchRef = pickSearchRef(q);
+        console.log('[ROYAL][REF]', 'search requested', searchRef || q);
         if (searchRef) row = await getLead(env.DB, searchRef);
         const phone = normalizePhone(q);
         if (!row && phone) {
@@ -306,9 +314,10 @@ export default {
         }
         if (!row) row = await getLead(env.DB, q.toUpperCase());
         if (!row) {
-          console.log('[search] REF no encontrado');
+          console.log('[ROYAL][REF]', 'not found', searchRef || q);
           return json(404, { error: 'No encontramos ese cliente.' }, origin);
         }
+        console.log('[ROYAL][REF]', 'found', row.ref);
         return json(200, { ok: true, lead: publicLead(row) }, origin);
       }
 

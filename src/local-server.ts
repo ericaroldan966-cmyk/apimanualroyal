@@ -17,7 +17,6 @@ import {
   summarizeSpend,
   isYmd,
   isLocalOrigin,
-  isValidRef,
   mergeAttribution,
   normalizePhone,
   nowIso,
@@ -48,8 +47,14 @@ const ENV = {
 
 const dataDir = process.env.RAILWAY_VOLUME_MOUNT_PATH || process.env.DATA_DIR || path.join(API_ROOT, 'data');
 if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
-const db = new DatabaseSync(path.join(dataDir, 'local.db'));
+const dbPath = path.join(dataDir, 'local.db');
+const db = new DatabaseSync(dbPath);
+db.exec('PRAGMA journal_mode=WAL;');
+db.exec('PRAGMA busy_timeout=5000;');
+db.exec('PRAGMA synchronous=NORMAL;');
 db.exec(fs.readFileSync(path.join(API_ROOT, 'schema.sql'), 'utf8'));
+const REF_LOG = '[ROYAL][REF]';
+console.log(REF_LOG, 'storage', dbPath, process.env.RAILWAY_VOLUME_MOUNT_PATH ? 'persistent-volume' : 'local-data-dir');
 
 function loadDotEnv(filePath: string): void {
   if (!fs.existsSync(filePath)) return;
@@ -163,16 +168,24 @@ function updateAttribution(ref: string, attr: Attribution): LeadRow {
 }
 
 function upsertVisit(requestedRef: unknown, incoming: Attribution): LeadRow {
-  let ref = asText(requestedRef, 20).toUpperCase();
-  if (ref && !isValidRef(ref)) ref = '';
-  if (ref) {
-    const existing = getLead(ref);
-    if (existing) return updateAttribution(ref, mergeAttribution(existing, incoming));
-    return insertLead(ref, incoming, 'VISIT');
+  const requested = pickSearchRef(String(requestedRef || ''));
+  if (requested) {
+    const existing = getLead(requested);
+    if (existing) {
+      const updated = updateAttribution(requested, mergeAttribution(existing, incoming));
+      console.log(REF_LOG, 'persisted', updated.ref);
+      return updated;
+    }
   }
-  for (let i = 0; i < 5; i++) {
+  for (let i = 0; i < 8; i++) {
     const next = makeRef();
-    if (!getLead(next)) return insertLead(next, incoming, 'VISIT');
+    if (!getLead(next)) {
+      console.log(REF_LOG, 'created', next);
+      const row = insertLead(next, incoming, 'VISIT');
+      if (!getLead(next)) throw new Error('No se pudo persistir el REF.');
+      console.log(REF_LOG, 'persisted', next);
+      return row;
+    }
   }
   throw new Error('No se pudo generar REF.');
 }
@@ -220,6 +233,7 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       const lead = upsertVisit(body.ref, attributionFromBody(body));
+      console.log(REF_LOG, 'returned to landing', lead.ref);
       void sendMetaEvent(ENV, {
         event_name: 'PageView',
         event_id: pageViewEventId(lead.ref),
@@ -309,6 +323,7 @@ const server = http.createServer(async (req, res) => {
       }
       let row = null;
       const searchRef = pickSearchRef(q);
+      console.log(REF_LOG, 'search requested', searchRef || q);
       if (searchRef) row = getLead(searchRef);
       const phone = normalizePhone(q);
       if (!row && phone) {
@@ -316,10 +331,11 @@ const server = http.createServer(async (req, res) => {
       }
       if (!row) row = getLead(q.toUpperCase());
       if (!row) {
-        console.log('[search] REF no encontrado');
+        console.log(REF_LOG, 'not found', searchRef || q);
         send(res, 404, { error: 'REF no encontrado' }, origin);
         return;
       }
+      console.log(REF_LOG, 'found', row.ref);
       send(res, 200, { ok: true, lead: publicLead(row) }, origin);
       return;
     }
