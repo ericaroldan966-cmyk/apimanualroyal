@@ -21,6 +21,7 @@ import {
   mergeAttribution,
   normalizePhone,
   nowIso,
+  pageViewEventId,
   pickSearchRef,
   publicLead,
   sendMetaEvent,
@@ -219,6 +220,16 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       const lead = upsertVisit(body.ref, attributionFromBody(body));
+      void sendMetaEvent(ENV, {
+        event_name: 'PageView',
+        event_id: pageViewEventId(lead.ref),
+        event_source_url: lead.landing_url || DEFAULT_LANDING_URL,
+        user_data: buildUserData(lead, {
+          client_ip_address: req.socket.remoteAddress || '',
+          client_user_agent: asText(req.headers['user-agent'], 400),
+        }),
+        custom_data: {},
+      });
       console.log('[visit] Lead guardado');
       send(res, 200, { ok: true, ref: lead.ref, status: lead.status }, origin);
       return;

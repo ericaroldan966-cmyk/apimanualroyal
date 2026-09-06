@@ -411,6 +411,12 @@ export function buildStats(range: StatsRange, leads: LeadStatRow[], purchases: P
   };
 }
 
+const META_BRAND = 'ROYAL';
+
+export function pageViewEventId(ref: string): string {
+  return 'pv_' + ref;
+}
+
 export async function sendMetaEvent(
   env: MetaEnv,
   input: {
@@ -448,6 +454,17 @@ export async function sendMetaEvent(
   };
   if (env.META_TEST_EVENT_CODE) payload.test_event_code = env.META_TEST_EVENT_CODE;
 
+  const targets: Array<{ pixelId: string; token: string; label: string }> = [
+    { pixelId: pixel1, token: token1, label: 'PIXEL_ID' },
+  ];
+  if (/^\d{5,20}$/.test(pixel2) && pixel2 !== pixel1) {
+    if (!token2) {
+      console.log('[META][' + META_BRAND + '] ' + input.event_name + ' omitido → PIXEL_ID_2');
+    } else {
+      targets.push({ pixelId: pixel2, token: token2, label: 'PIXEL_ID_2' });
+    }
+  }
+
   const sendToPixel = async (pixelId: string, token: string, label: string) => {
     const graphUrl =
       'https://graph.facebook.com/' +
@@ -471,27 +488,23 @@ export async function sendMetaEvent(
       }
       if (!response.ok || (data.error && data.error.message)) {
         const message = (data.error && data.error.message) || ('Error de Meta HTTP ' + response.status);
-        console.log('[meta] Error ' + label + ' ' + pixelId + ': ' + message);
+        console.log('[META][' + META_BRAND + '] ' + input.event_name + ' error → ' + label);
         return { ok: false, error: message };
       }
+      console.log('[META][' + META_BRAND + '] ' + input.event_name + ' enviado → ' + label);
       return { ok: true, events_received: data.events_received, fbtrace_id: data.fbtrace_id };
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Error de Meta';
-      console.log('[meta] Error ' + label + ' ' + pixelId + ': ' + message);
+      console.log('[META][' + META_BRAND + '] ' + input.event_name + ' error → ' + label);
       return { ok: false, error: message };
     }
   };
 
-  const primary = await sendToPixel(pixel1, token1, 'pixel 1');
-
-  if (/^\d{5,20}$/.test(pixel2) && pixel2 !== pixel1) {
-    if (!token2) {
-      console.log('[meta] Pixel 2 ' + pixel2 + ' omitido: falta META_ACCESS_TOKEN_2');
-    } else {
-      const copy = await sendToPixel(pixel2, token2, 'pixel 2');
-      if (copy.ok) console.log('[meta] Pixel 2 ok ' + pixel2 + ' ' + input.event_name);
-    }
-  }
-
+  const settled = await Promise.allSettled(
+    targets.map((target) => sendToPixel(target.pixelId, target.token, target.label)),
+  );
+  const primary = settled[0] && settled[0].status === 'fulfilled'
+    ? settled[0].value
+    : { ok: false, error: 'Error de Meta' };
   return primary;
 }

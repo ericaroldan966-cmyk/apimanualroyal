@@ -16,6 +16,7 @@ import {
   mergeAttribution,
   normalizePhone,
   nowIso,
+  pageViewEventId,
   pickSearchRef,
   publicLead,
   sendMetaEvent,
@@ -209,6 +210,22 @@ export default {
         const body = await readJson(request);
         if (!Object.keys(body).length) return json(400, { error: 'Cuerpo inválido.' }, origin);
         const lead = await upsertVisit(env.DB, body.ref, attributionFromBody(body));
+        void sendMetaEvent({
+          META_ACCESS_TOKEN: env.META_ACCESS_TOKEN || '',
+          META_ACCESS_TOKEN_2: env.META_ACCESS_TOKEN_2 || '',
+          META_TEST_EVENT_CODE: env.META_TEST_EVENT_CODE,
+          PIXEL_ID: env.PIXEL_ID,
+          PIXEL_ID_2: env.PIXEL_ID_2 || PIXEL_ID_2,
+        }, {
+          event_name: 'PageView',
+          event_id: pageViewEventId(lead.ref),
+          event_source_url: lead.landing_url || landingUrl(env),
+          user_data: await buildUserData(lead, {
+            client_ip_address: clientIp(request),
+            client_user_agent: asText(request.headers.get('User-Agent'), 400),
+          }),
+          custom_data: {},
+        });
         console.log('[visit] Lead guardado');
         return json(200, { ok: true, ref: lead.ref, status: lead.status }, origin);
       }
