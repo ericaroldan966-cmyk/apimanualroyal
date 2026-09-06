@@ -7,6 +7,7 @@ import { DatabaseSync } from 'node:sqlite';
 import {
   DEFAULT_LANDING_URL,
   PIXEL_ID,
+  PIXEL_ID_2,
   asText,
   attributionFromBody,
   buildStats,
@@ -40,6 +41,7 @@ const ENV = {
   PURCHASE_SEND_KEY: process.env.PURCHASE_SEND_KEY || '',
   META_TEST_EVENT_CODE: process.env.META_TEST_EVENT_CODE || '',
   PIXEL_ID: process.env.PIXEL_ID || PIXEL_ID,
+  PIXEL_ID_2: process.env.PIXEL_ID_2 || PIXEL_ID_2,
 };
 
 const dataDir = process.env.RAILWAY_VOLUME_MOUNT_PATH || process.env.DATA_DIR || path.join(API_ROOT, 'data');
@@ -322,16 +324,27 @@ const server = http.createServer(async (req, res) => {
       }
       const alreadyHadPurchase = Boolean(lead.purchase_enviado);
       const eventId = 'purchase_' + lead.ref + '_' + Date.now().toString(36);
+      const purchaseUserData = buildUserData(lead, {
+        client_ip_address: req.socket.remoteAddress || '',
+        client_user_agent: asText(req.headers['user-agent'], 400),
+      });
+      const purchaseCustom = { currency: 'ARS', value: Number(monto.toFixed(2)), order_id: lead.ref };
       const meta = await sendMetaEvent(ENV, {
         event_name: 'Purchase',
         event_id: eventId,
         event_source_url: DEFAULT_LANDING_URL,
-        user_data: buildUserData(lead, {
-          client_ip_address: req.socket.remoteAddress || '',
-          client_user_agent: asText(req.headers['user-agent'], 400),
-        }),
-        custom_data: { currency: 'ARS', value: Number(monto.toFixed(2)), order_id: lead.ref },
+        user_data: purchaseUserData,
+        custom_data: purchaseCustom,
       });
+      if (meta.ok) {
+        await sendMetaEvent(ENV, {
+          event_name: 'InitiateCheckout',
+          event_id: 'ic_' + lead.ref + '_' + Date.now().toString(36),
+          event_source_url: DEFAULT_LANDING_URL,
+          user_data: purchaseUserData,
+          custom_data: purchaseCustom,
+        });
+      }
       const created = nowIso();
       db.prepare(`
         INSERT INTO purchases (

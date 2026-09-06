@@ -1,6 +1,7 @@
 import {
   DEFAULT_LANDING_URL,
   PIXEL_ID,
+  PIXEL_ID_2,
   REF_CHARS,
   asText,
   attributionFromBody,
@@ -28,6 +29,7 @@ type Env = {
   PURCHASE_SEND_KEY?: string;
   META_TEST_EVENT_CODE?: string;
   PIXEL_ID?: string;
+  PIXEL_ID_2?: string;
   LANDING_URL?: string;
   ALLOWED_ORIGIN?: string;
 };
@@ -218,6 +220,7 @@ export default {
           META_ACCESS_TOKEN: env.META_ACCESS_TOKEN || '',
           META_TEST_EVENT_CODE: env.META_TEST_EVENT_CODE,
           PIXEL_ID: env.PIXEL_ID,
+          PIXEL_ID_2: env.PIXEL_ID_2 || PIXEL_ID_2,
         }, {
           event_name: 'Lead',
           event_id: eventId,
@@ -299,20 +302,33 @@ export default {
         }
         const alreadyHadPurchase = Boolean(lead.purchase_enviado);
         const eventId = 'purchase_' + lead.ref + '_' + Date.now().toString(36);
-        const meta = await sendMetaEvent({
+        const purchaseUserData = await buildUserData(lead, {
+          client_ip_address: clientIp(request),
+          client_user_agent: asText(request.headers.get('User-Agent'), 400),
+        });
+        const purchaseCustom = { currency: 'ARS', value: Number(monto.toFixed(2)), order_id: lead.ref };
+        const metaEnv = {
           META_ACCESS_TOKEN: env.META_ACCESS_TOKEN,
           META_TEST_EVENT_CODE: env.META_TEST_EVENT_CODE,
           PIXEL_ID: env.PIXEL_ID,
-        }, {
+          PIXEL_ID_2: env.PIXEL_ID_2 || PIXEL_ID_2,
+        };
+        const meta = await sendMetaEvent(metaEnv, {
           event_name: 'Purchase',
           event_id: eventId,
           event_source_url: landingUrl(env),
-          user_data: await buildUserData(lead, {
-            client_ip_address: clientIp(request),
-            client_user_agent: asText(request.headers.get('User-Agent'), 400),
-          }),
-          custom_data: { currency: 'ARS', value: Number(monto.toFixed(2)), order_id: lead.ref },
+          user_data: purchaseUserData,
+          custom_data: purchaseCustom,
         });
+        if (meta.ok) {
+          await sendMetaEvent(metaEnv, {
+            event_name: 'InitiateCheckout',
+            event_id: 'ic_' + lead.ref + '_' + Date.now().toString(36),
+            event_source_url: landingUrl(env),
+            user_data: purchaseUserData,
+            custom_data: purchaseCustom,
+          });
+        }
         const created = nowIso();
         await env.DB.prepare(`
           INSERT INTO purchases (

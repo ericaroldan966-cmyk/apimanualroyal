@@ -1,4 +1,5 @@
 export const PIXEL_ID = '1767312904299608';
+export const PIXEL_ID_2 = '1075060428238436';
 export const GRAPH_VERSION = 'v21.0';
 export const DEFAULT_LANDING_URL = 'https://ericaroldan966-cmyk.github.io/landingappganamos/';
 export const REF_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -69,6 +70,7 @@ export type MetaEnv = {
   META_ACCESS_TOKEN: string;
   META_TEST_EVENT_CODE?: string;
   PIXEL_ID?: string;
+  PIXEL_ID_2?: string;
 };
 
 export function nowIso(): string {
@@ -429,34 +431,51 @@ export async function sendMetaEvent(
   };
   if (env.META_TEST_EVENT_CODE) payload.test_event_code = env.META_TEST_EVENT_CODE;
 
-  const graphUrl =
-    'https://graph.facebook.com/' +
-    GRAPH_VERSION +
-    '/' +
-    (env.PIXEL_ID || PIXEL_ID) +
-    '/events?access_token=' +
-    encodeURIComponent(env.META_ACCESS_TOKEN);
-
-  try {
-    const response = await fetch(graphUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    const text = await response.text();
-    let data: { error?: { message?: string }; events_received?: number; fbtrace_id?: string } = {};
-    try {
-      data = text ? JSON.parse(text) : {};
-    } catch {
-      data = { error: { message: 'Respuesta inválida de Meta.' } };
-    }
-    if (!response.ok || (data.error && data.error.message)) {
-      console.log('[meta] Error Meta API');
-      return { ok: false, error: (data.error && data.error.message) || 'Error de Meta' };
-    }
-    return { ok: true, events_received: data.events_received, fbtrace_id: data.fbtrace_id };
-  } catch {
-    console.log('[meta] Error Meta API');
-    return { ok: false, error: 'Error de Meta' };
+  const ids: string[] = [];
+  for (const value of [env.PIXEL_ID || PIXEL_ID, env.PIXEL_ID_2 || PIXEL_ID_2]) {
+    const id = String(value || '').trim();
+    if (/^\d{5,20}$/.test(id) && !ids.includes(id)) ids.push(id);
   }
+  if (!ids.length) {
+    return { ok: false, error: 'Falta PIXEL_ID.' };
+  }
+
+  const sendToPixel = async (pixelId: string) => {
+    const graphUrl =
+      'https://graph.facebook.com/' +
+      GRAPH_VERSION +
+      '/' +
+      pixelId +
+      '/events?access_token=' +
+      encodeURIComponent(env.META_ACCESS_TOKEN);
+    try {
+      const response = await fetch(graphUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const text = await response.text();
+      let data: { error?: { message?: string }; events_received?: number; fbtrace_id?: string } = {};
+      try {
+        data = text ? JSON.parse(text) : {};
+      } catch {
+        data = { error: { message: 'Respuesta inválida de Meta.' } };
+      }
+      if (!response.ok || (data.error && data.error.message)) {
+        console.log('[meta] Error Meta API');
+        return { ok: false, error: (data.error && data.error.message) || 'Error de Meta' };
+      }
+      return { ok: true, events_received: data.events_received, fbtrace_id: data.fbtrace_id };
+    } catch {
+      console.log('[meta] Error Meta API');
+      return { ok: false, error: 'Error de Meta' };
+    }
+  };
+
+  const primary = await sendToPixel(ids[0]);
+  for (const pixelId of ids.slice(1)) {
+    const copy = await sendToPixel(pixelId);
+    if (!copy.ok) console.log('[meta] Error pixel 2');
+  }
+  return primary;
 }
