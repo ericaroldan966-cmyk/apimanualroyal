@@ -490,18 +490,26 @@ export async function sendMetaEvent(
         body: JSON.stringify(payload),
       });
       const text = await response.text();
-      let data: { error?: { message?: string }; events_received?: number; fbtrace_id?: string } = {};
+      let data: {
+        error?: { message?: string };
+        events_received?: number;
+        fbtrace_id?: string;
+        messages?: Array<{ message?: string; type?: string }>;
+      } = {};
       try {
         data = text ? JSON.parse(text) : {};
       } catch {
         data = { error: { message: 'Respuesta inválida de Meta.' } };
       }
-      if (!response.ok || (data.error && data.error.message)) {
-        const message = (data.error && data.error.message) || ('Error de Meta HTTP ' + response.status);
+      const hint = (data.messages || []).map((item) => item.message || item.type || '').filter(Boolean).join(' | ');
+      if (!response.ok || (data.error && data.error.message) || Number(data.events_received || 0) < 1) {
+        const message = (data.error && data.error.message)
+          || hint
+          || ('Error de Meta HTTP ' + response.status + ' events_received=' + String(data.events_received ?? 0));
         console.log('[META][' + META_BRAND + '] ' + input.event_name + ' error → ' + label + ' ' + pixelId + extra + ' :: ' + message);
         return { ok: false, error: message };
       }
-      console.log('[META][' + META_BRAND + '] ' + input.event_name + ' enviado → ' + label + ' ' + pixelId + extra);
+      console.log('[META][' + META_BRAND + '] ' + input.event_name + ' enviado → ' + label + ' ' + pixelId + extra + ' events_received=' + String(data.events_received) + (hint ? ' :: ' + hint : ''));
       return { ok: true, events_received: data.events_received, fbtrace_id: data.fbtrace_id };
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Error de Meta';
