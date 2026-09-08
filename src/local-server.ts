@@ -27,6 +27,8 @@ import {
   pickSearchRef,
   publicLead,
   sendMetaEvent,
+  metaFailureMessage,
+  metaPixelPayload,
   type Attribution,
   type LeadRow,
 } from './shared.ts';
@@ -331,16 +333,21 @@ const server = http.createServer(async (req, res) => {
         WHERE ref = ?
       `).run(
         nowIso(),
-        meta.ok ? 1 : 0,
+        (meta.pixel1_ok || meta.pixel2_ok) ? 1 : 0,
         eventId,
         nowIso(),
         meta.events_received == null ? null : meta.events_received,
-        meta.ok ? null : (meta.error || 'Error Meta API'),
+        meta.ok ? null : metaFailureMessage(meta),
         lead.ref,
       );
-      if (meta.ok) console.log('[lead] Lead enviado a Meta');
-      else console.log('[meta] Error Meta API');
-      send(res, 200, { ok: true, ref: lead.ref, event_id: eventId, events_received: meta.events_received, meta_ok: meta.ok }, origin);
+      console.log('[lead] Lead pixel1_ok=' + String(meta.pixel1_ok) + ' pixel2_ok=' + String(meta.pixel2_ok) + (meta.ok ? '' : ' :: ' + metaFailureMessage(meta)));
+      send(res, 200, {
+        ok: true,
+        ref: lead.ref,
+        event_id: eventId,
+        events_received: meta.events_received,
+        ...metaPixelPayload(meta),
+      }, origin);
       return;
     }
 
@@ -421,6 +428,9 @@ const server = http.createServer(async (req, res) => {
         custom_data: purchaseCustom,
       });
       const created = nowIso();
+      const saleSaved = meta.pixel1_ok || meta.pixel2_ok;
+      const metaStatus = meta.ok ? 'ok' : (saleSaved ? 'partial' : 'error');
+      const metaError = meta.ok ? null : metaFailureMessage(meta);
       db.prepare(`
         INSERT INTO purchases (
           ref, monto, event_id, created_at,
@@ -431,31 +441,37 @@ const server = http.createServer(async (req, res) => {
         lead.ref, monto, eventId, created,
         lead.campaign_id, lead.campaign_name, lead.adset_id, lead.adset_name, lead.ad_id, lead.ad_name,
         meta.events_received == null ? null : meta.events_received,
-        meta.ok ? 'ok' : 'error',
-        meta.ok ? null : (meta.error || 'Error Meta API'),
+        metaStatus,
+        metaError,
         (force || alreadyHadPurchase) ? 1 : 0,
       );
-      if (!meta.ok) {
-        db.prepare('UPDATE leads SET updated_at = ?, purchase_meta_error = ? WHERE ref = ?').run(created, meta.error, lead.ref);
-        console.log('[meta] Error Meta API');
-        send(res, 502, { error: meta.error || 'Error de Meta' }, origin);
+      if (!saleSaved) {
+        db.prepare('UPDATE leads SET updated_at = ?, purchase_meta_error = ? WHERE ref = ?').run(created, metaError, lead.ref);
+        console.log('[purchase] Purchase error pixel1_ok=false pixel2_ok=false :: ' + metaError);
+        send(res, 502, {
+          error: metaError || 'Error de Meta',
+          saved: false,
+          ...metaPixelPayload(meta),
+        }, origin);
         return;
       }
       db.prepare(`
         UPDATE leads SET
           updated_at = ?, status = 'PURCHASE', purchase_enviado = 1,
           purchase_event_id = ?, monto_purchase = ?, fecha_purchase = ?,
-          purchase_events_received = ?, purchase_meta_error = NULL
+          purchase_events_received = ?, purchase_meta_error = ?
         WHERE ref = ?
-      `).run(created, eventId, monto, created, meta.events_received == null ? null : meta.events_received, lead.ref);
-      console.log('[purchase] Purchase enviado');
+      `).run(created, eventId, monto, created, meta.events_received == null ? null : meta.events_received, metaError, lead.ref);
+      console.log('[purchase] Purchase guardado pixel1_ok=' + String(meta.pixel1_ok) + ' pixel2_ok=' + String(meta.pixel2_ok) + (meta.ok ? '' : ' :: ' + metaError));
       send(res, 200, {
-        ok: true,
+        ok: meta.ok,
+        saved: true,
         ref: lead.ref,
         monto,
         event_id: eventId,
         fecha_purchase: created,
         events_received: meta.events_received,
+        ...metaPixelPayload(meta),
         lead: publicLead(getLead(lead.ref)),
       }, origin);
       return;

@@ -440,6 +440,17 @@ export function storedOrRequest(stored: unknown, fallback: string): string {
   return value || fallback;
 }
 
+export type MetaSendResult = {
+  ok: boolean;
+  pixel1_ok: boolean;
+  pixel2_ok: boolean;
+  pixel1_error?: string;
+  pixel2_error?: string;
+  events_received?: number;
+  fbtrace_id?: string;
+  error?: string;
+};
+
 export async function sendMetaEvent(
   env: MetaEnv,
   input: {
@@ -449,11 +460,12 @@ export async function sendMetaEvent(
     user_data: Record<string, unknown>;
     custom_data: Record<string, unknown>;
   },
-): Promise<{ ok: boolean; error?: string; events_received?: number; fbtrace_id?: string }> {
+): Promise<MetaSendResult> {
   const token1 = String(env.META_ACCESS_TOKEN || '').trim();
   const token2 = String(env.META_ACCESS_TOKEN_2 || '').trim();
   const pixel1 = String(env.PIXEL_ID || PIXEL_ID || '').trim();
   const pixel2 = String(env.PIXEL_ID_2 || PIXEL_ID_2 || '').trim();
+  const pixel2Enabled = /^\d{5,20}$/.test(pixel2) && pixel2 !== pixel1;
 
   const payload: Record<string, unknown> = {
     data: [
@@ -469,26 +481,6 @@ export async function sendMetaEvent(
     ],
   };
   if (env.META_TEST_EVENT_CODE) payload.test_event_code = env.META_TEST_EVENT_CODE;
-
-  const targets: Array<{ pixelId: string; token: string; label: string }> = [];
-  if (token1 && /^\d{5,20}$/.test(pixel1)) {
-    targets.push({ pixelId: pixel1, token: token1, label: 'PIXEL_ID' });
-  } else {
-    console.log('[META][' + META_BRAND + '] ' + input.event_name + ' omitido → PIXEL_ID');
-  }
-  if (/^\d{5,20}$/.test(pixel2) && pixel2 !== pixel1) {
-    if (token2) {
-      targets.push({ pixelId: pixel2, token: token2, label: 'PIXEL_ID_2' });
-    } else if (token1) {
-      console.log('[META][' + META_BRAND + '] ' + input.event_name + ' PIXEL_ID_2 sin TOKEN_2, usa TOKEN_1 → ' + pixel2);
-      targets.push({ pixelId: pixel2, token: token1, label: 'PIXEL_ID_2(TOKEN_1)' });
-    } else {
-      console.log('[META][' + META_BRAND + '] ' + input.event_name + ' omitido → PIXEL_ID_2');
-    }
-  }
-  if (!targets.length) {
-    return { ok: false, error: 'Falta PIXEL_ID o Access Token.' };
-  }
 
   const extra = input.event_name === 'Purchase' || input.event_name === 'InitiateCheckout'
     ? ' value=' + String((input.custom_data || {}).value ?? '') + ' currency=' + String((input.custom_data || {}).currency ?? '')
@@ -537,16 +529,62 @@ export async function sendMetaEvent(
     }
   };
 
-  const results: Array<{ ok: boolean; error?: string; events_received?: number; fbtrace_id?: string }> = [];
-  for (const target of targets) {
-    let result = await sendToPixel(target.pixelId, target.token, target.label);
-    if (!result.ok && target.label === 'PIXEL_ID_2' && token1 && token1 !== target.token) {
-      console.log('[META][' + META_BRAND + '] ' + input.event_name + ' PIXEL_ID_2 fallo con TOKEN_2, reintento con TOKEN_1 → ' + target.pixelId);
-      result = await sendToPixel(target.pixelId, token1, 'PIXEL_ID_2(fallback TOKEN_1)');
-    }
-    results.push(result);
+  let pixel1Result: { ok: boolean; error?: string; events_received?: number; fbtrace_id?: string } = { ok: false, error: 'PIXEL_ID omitido' };
+  let pixel2Result: { ok: boolean; error?: string; events_received?: number; fbtrace_id?: string } = { ok: false, error: 'PIXEL_ID_2 omitido' };
+
+  if (token1 && /^\d{5,20}$/.test(pixel1)) {
+    pixel1Result = await sendToPixel(pixel1, token1, 'PIXEL_ID');
+  } else {
+    console.log('[META][' + META_BRAND + '] ' + input.event_name + ' omitido → PIXEL_ID');
+    pixel1Result = { ok: false, error: 'Falta PIXEL_ID o META_ACCESS_TOKEN' };
   }
-  const success = results.find((item) => item.ok);
-  if (success) return success;
-  return results[0] || { ok: false, error: 'Error de Meta' };
+
+  if (pixel2Enabled) {
+    if (token2) {
+      pixel2Result = await sendToPixel(pixel2, token2, 'PIXEL_ID_2');
+    } else {
+      console.log('[META][' + META_BRAND + '] ' + input.event_name + ' omitido → PIXEL_ID_2 (falta META_ACCESS_TOKEN_2)');
+      pixel2Result = { ok: false, error: 'Falta META_ACCESS_TOKEN_2 para PIXEL_ID_2' };
+    }
+  } else {
+    pixel2Result = { ok: true };
+  }
+
+  const bothOk = pixel1Result.ok && pixel2Result.ok;
+  const pixel1Ok = pixel1Result.ok;
+  const pixel2Ok = pixel2Enabled ? pixel2Result.ok : true;
+  const pixel1Error = pixel1Ok ? undefined : pixel1Result.error;
+  const pixel2Error = pixel2Ok ? undefined : pixel2Result.error;
+  return {
+    ok: bothOk,
+    pixel1_ok: pixel1Ok,
+    pixel2_ok: pixel2Ok,
+    pixel1_error: pixel1Error,
+    pixel2_error: pixel2Error,
+    events_received: (pixel1Result.events_received || 0) + (pixel2Enabled ? (pixel2Result.events_received || 0) : 0) || undefined,
+    fbtrace_id: pixel1Result.fbtrace_id || pixel2Result.fbtrace_id,
+    error: bothOk ? undefined : metaFailureMessage({
+      pixel1_ok: pixel1Ok,
+      pixel2_ok: pixel2Ok,
+      pixel1_error: pixel1Error,
+      pixel2_error: pixel2Error,
+    }),
+  };
+}
+
+export function metaFailureMessage(meta: Pick<MetaSendResult, 'pixel1_ok' | 'pixel2_ok' | 'pixel1_error' | 'pixel2_error' | 'error'>): string {
+  const parts: string[] = [];
+  if (!meta.pixel1_ok) parts.push('PIXEL_ID: ' + (meta.pixel1_error || 'error'));
+  if (!meta.pixel2_ok) parts.push('PIXEL_ID_2: ' + (meta.pixel2_error || 'error'));
+  return parts.join(' | ') || meta.error || 'Error de Meta';
+}
+
+export function metaPixelPayload(meta: MetaSendResult) {
+  return {
+    pixel1_ok: meta.pixel1_ok,
+    pixel2_ok: meta.pixel2_ok,
+    pixel1_error: meta.pixel1_error || null,
+    pixel2_error: meta.pixel2_error || null,
+    meta_ok: meta.ok,
+  };
 }
