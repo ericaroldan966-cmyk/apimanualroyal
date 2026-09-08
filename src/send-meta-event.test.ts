@@ -109,7 +109,7 @@ async function testPixel2ErrorKeepsPixel1(): Promise<void> {
   });
   const result = await send('Purchase', 'purchase_fail2', { currency: 'ARS', value: 5000 });
   assert(result.ok === true, 'Pixel 1 debería quedar ok');
-  assert(calls.length === 2, 'ambos pixels deben intentarse');
+  assert(calls.length === 3, 'Pixel 2 se reintenta con TOKEN_1');
 }
 
 async function testPixel1ErrorKeepsPixel2(): Promise<void> {
@@ -151,11 +151,48 @@ async function testMissingToken1StillSendsPixel2(): Promise<void> {
   assert(tokenFromUrl(calls[0].url) === 'token-2', 'debía usar token 2');
 }
 
+async function testMissingToken2UsesToken1(): Promise<void> {
+  const calls = mockFetch(okHandler);
+  await sendMetaEvent({
+    META_ACCESS_TOKEN: 'token-1',
+    META_ACCESS_TOKEN_2: '',
+    PIXEL_ID: '111111111111111',
+    PIXEL_ID_2: '222222222222222',
+  }, {
+    event_name: 'Purchase',
+    event_id: 'purchase_no_t2',
+    event_source_url: 'https://example.com/',
+    user_data: USER,
+    custom_data: { currency: 'ARS', value: 5000 },
+  });
+  assert(calls.length === 2, 'Pixel 2 igual se envía');
+  const pixel2 = calls.find((call) => pixelFromUrl(call.url) === '222222222222222');
+  assert(pixel2, 'faltó request a Pixel 2');
+  assert(tokenFromUrl(pixel2!.url) === 'token-1', 'sin TOKEN_2 debe usar TOKEN_1');
+}
+
+async function testToken2FailFallsBackToToken1(): Promise<void> {
+  const calls = mockFetch((url) => {
+    if (tokenFromUrl(url) === 'token-2') {
+      return { ok: false, status: 400, json: { error: { message: 'bad token 2' } } };
+    }
+    return { ok: true, status: 200, json: { events_received: 1 } };
+  });
+  const result = await send('Purchase', 'purchase_fb', { currency: 'ARS', value: 5000 });
+  assert(result.ok === true, 'fallback TOKEN_1 debería dejar ok');
+  const pixel2 = calls.filter((call) => pixelFromUrl(call.url) === '222222222222222');
+  assert(pixel2.length === 2, 'Pixel 2 se intenta dos veces');
+  assert(tokenFromUrl(pixel2[0].url) === 'token-2', 'primero TOKEN_2');
+  assert(tokenFromUrl(pixel2[1].url) === 'token-1', 'después TOKEN_1');
+}
+
 const tests = [
   ['dual send 4 eventos x 2 pixels', testDualSendAllEvents],
   ['Pixel 2 error no cancela Pixel 1', testPixel2ErrorKeepsPixel1],
   ['Pixel 1 error no cancela Pixel 2', testPixel1ErrorKeepsPixel2],
   ['sin token 1 igual envía Pixel 2', testMissingToken1StillSendsPixel2],
+  ['sin token 2 Pixel 2 usa token 1', testMissingToken2UsesToken1],
+  ['token 2 falla y reintenta con token 1', testToken2FailFallsBackToToken1],
   ['si fallan los dos, ok es false', testBothPixelsFail],
 ] as const;
 

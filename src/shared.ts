@@ -458,15 +458,22 @@ export async function sendMetaEvent(
     console.log('[META][' + META_BRAND + '] ' + input.event_name + ' omitido → PIXEL_ID');
   }
   if (/^\d{5,20}$/.test(pixel2) && pixel2 !== pixel1) {
-    if (!token2) {
-      console.log('[META][' + META_BRAND + '] ' + input.event_name + ' omitido → PIXEL_ID_2');
-    } else {
+    if (token2) {
       targets.push({ pixelId: pixel2, token: token2, label: 'PIXEL_ID_2' });
+    } else if (token1) {
+      console.log('[META][' + META_BRAND + '] ' + input.event_name + ' PIXEL_ID_2 sin TOKEN_2, usa TOKEN_1 → ' + pixel2);
+      targets.push({ pixelId: pixel2, token: token1, label: 'PIXEL_ID_2(TOKEN_1)' });
+    } else {
+      console.log('[META][' + META_BRAND + '] ' + input.event_name + ' omitido → PIXEL_ID_2');
     }
   }
   if (!targets.length) {
     return { ok: false, error: 'Falta PIXEL_ID o Access Token.' };
   }
+
+  const extra = input.event_name === 'Purchase' || input.event_name === 'InitiateCheckout'
+    ? ' value=' + String((input.custom_data || {}).value ?? '') + ' currency=' + String((input.custom_data || {}).currency ?? '')
+    : '';
 
   const sendToPixel = async (pixelId: string, token: string, label: string) => {
     const graphUrl =
@@ -491,24 +498,27 @@ export async function sendMetaEvent(
       }
       if (!response.ok || (data.error && data.error.message)) {
         const message = (data.error && data.error.message) || ('Error de Meta HTTP ' + response.status);
-        console.log('[META][' + META_BRAND + '] ' + input.event_name + ' error → ' + label + ' HTTP ' + response.status);
+        console.log('[META][' + META_BRAND + '] ' + input.event_name + ' error → ' + label + ' ' + pixelId + extra + ' :: ' + message);
         return { ok: false, error: message };
       }
-      console.log('[META][' + META_BRAND + '] ' + input.event_name + ' enviado → ' + label);
+      console.log('[META][' + META_BRAND + '] ' + input.event_name + ' enviado → ' + label + ' ' + pixelId + extra);
       return { ok: true, events_received: data.events_received, fbtrace_id: data.fbtrace_id };
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Error de Meta';
-      console.log('[META][' + META_BRAND + '] ' + input.event_name + ' error → ' + label);
+      console.log('[META][' + META_BRAND + '] ' + input.event_name + ' error → ' + label + ' ' + pixelId + extra + ' :: ' + message);
       return { ok: false, error: message };
     }
   };
 
-  const settled = await Promise.allSettled(
-    targets.map((target) => sendToPixel(target.pixelId, target.token, target.label)),
-  );
-  const results = settled.map((item) =>
-    item.status === 'fulfilled' ? item.value : { ok: false, error: 'Error de Meta' },
-  );
+  const results: Array<{ ok: boolean; error?: string; events_received?: number; fbtrace_id?: string }> = [];
+  for (const target of targets) {
+    let result = await sendToPixel(target.pixelId, target.token, target.label);
+    if (!result.ok && target.label === 'PIXEL_ID_2' && token1 && token1 !== target.token) {
+      console.log('[META][' + META_BRAND + '] ' + input.event_name + ' PIXEL_ID_2 fallo con TOKEN_2, reintento con TOKEN_1 → ' + target.pixelId);
+      result = await sendToPixel(target.pixelId, token1, 'PIXEL_ID_2(fallback TOKEN_1)');
+    }
+    results.push(result);
+  }
   const success = results.find((item) => item.ok);
   if (success) return success;
   return results[0] || { ok: false, error: 'Error de Meta' };

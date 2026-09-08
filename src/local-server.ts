@@ -370,14 +370,14 @@ const server = http.createServer(async (req, res) => {
       const meta = await sendMetaEvent(ENV, {
         event_name: 'Purchase',
         event_id: eventId,
-        event_source_url: DEFAULT_LANDING_URL,
+        event_source_url: lead.landing_url || DEFAULT_LANDING_URL,
         user_data: purchaseUserData,
         custom_data: purchaseCustom,
       });
       await sendMetaEvent(ENV, {
         event_name: 'InitiateCheckout',
         event_id: 'ic_' + lead.ref + '_' + Date.now().toString(36),
-        event_source_url: DEFAULT_LANDING_URL,
+        event_source_url: lead.landing_url || DEFAULT_LANDING_URL,
         user_data: purchaseUserData,
         custom_data: purchaseCustom,
       });

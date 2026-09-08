@@ -355,14 +355,14 @@ export default {
         const meta = await sendMetaEvent(metaEnv, {
           event_name: 'Purchase',
           event_id: eventId,
-          event_source_url: landingUrl(env),
+          event_source_url: lead.landing_url || landingUrl(env),
           user_data: purchaseUserData,
           custom_data: purchaseCustom,
         });
         await sendMetaEvent(metaEnv, {
           event_name: 'InitiateCheckout',
           event_id: 'ic_' + lead.ref + '_' + Date.now().toString(36),
-          event_source_url: landingUrl(env),
+          event_source_url: lead.landing_url || landingUrl(env),
           user_data: purchaseUserData,
           custom_data: purchaseCustom,
         });
