@@ -1,0 +1,2 @@
+ALTER TABLE leads ADD COLUMN client_ip TEXT;
+ALTER TABLE leads ADD COLUMN user_agent TEXT;

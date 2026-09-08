@@ -16,6 +16,9 @@ import {
   normalizePhone,
   nowIso,
   pageViewEventId,
+  checkoutEventId,
+  firstForwardedIp,
+  storedOrRequest,
   pickSearchRef,
   publicLead,
   sendMetaEvent,
@@ -86,9 +89,25 @@ function rateLimited(ip: string): boolean {
 }
 
 function clientIp(request: Request): string {
-  const forwarded = request.headers.get('x-forwarded-for') || '';
-  const first = forwarded.split(',')[0].trim();
-  return first || request.headers.get('x-real-ip') || request.headers.get('CF-Connecting-IP') || '';
+  return firstForwardedIp(
+    request.headers.get('x-forwarded-for'),
+    request.headers.get('x-real-ip'),
+    request.headers.get('CF-Connecting-IP'),
+    request.headers.get('cf-connecting-ip'),
+  );
+}
+
+async function persistVisitorContext(db: D1Database, ref: string, ip: string, userAgent: string): Promise<LeadRow> {
+  await db.prepare(`
+    UPDATE leads SET
+      client_ip = CASE WHEN client_ip IS NULL OR client_ip = '' THEN ? ELSE client_ip END,
+      user_agent = CASE WHEN user_agent IS NULL OR user_agent = '' THEN ? ELSE user_agent END,
+      updated_at = ?
+    WHERE ref = ?
+  `).bind(ip, userAgent, nowIso(), ref).run();
+  const row = await getLead(db, ref);
+  if (!row) throw new Error('No se pudo guardar el contexto del visitante.');
+  return row;
 }
 
 function landingUrl(env: Env): string {
@@ -216,7 +235,9 @@ export default {
         if (rateLimited(clientIp(request))) return json(429, { error: 'Demasiados intentos.' }, origin);
         const body = await readJson(request);
         if (!Object.keys(body).length) return json(400, { error: 'Cuerpo inválido.' }, origin);
-        const lead = await upsertVisit(env.DB, body.ref, attributionFromBody(body));
+        const ip = clientIp(request);
+        const userAgent = asText(request.headers.get('User-Agent'), 400);
+        const lead = await persistVisitorContext(env.DB, (await upsertVisit(env.DB, body.ref, attributionFromBody(body))).ref, ip, userAgent);
         console.log('[ROYAL][REF]', 'returned to landing', lead.ref);
         void sendMetaEvent({
           META_ACCESS_TOKEN: env.META_ACCESS_TOKEN || '',
@@ -229,8 +250,8 @@ export default {
           event_id: pageViewEventId(lead.ref),
           event_source_url: lead.landing_url || landingUrl(env),
           user_data: await buildUserData(lead, {
-            client_ip_address: clientIp(request),
-            client_user_agent: asText(request.headers.get('User-Agent'), 400),
+            client_ip_address: ip,
+            client_user_agent: userAgent,
           }),
           custom_data: {},
         });
@@ -243,26 +264,37 @@ export default {
         if (rateLimited(clientIp(request))) return json(429, { error: 'Demasiados intentos.' }, origin);
         const body = await readJson(request);
         if (!Object.keys(body).length) return json(400, { error: 'Cuerpo inválido.' }, origin);
-        const lead = await upsertVisit(env.DB, body.ref, attributionFromBody(body));
+        const ip = clientIp(request);
+        const userAgent = asText(request.headers.get('User-Agent'), 400);
+        const lead = await persistVisitorContext(env.DB, (await upsertVisit(env.DB, body.ref, attributionFromBody(body))).ref, ip, userAgent);
         const eventId = asText(body.event_id, 80) || ('lead_' + lead.ref);
-        if (lead.lead_enviado) {
-          console.log('[lead] Lead omitido, ya enviado');
-          return json(200, { ok: true, ref: lead.ref, event_id: lead.lead_event_id || eventId, already_sent: true }, origin);
-        }
-        const meta = await sendMetaEvent({
+        const metaEnv = {
           META_ACCESS_TOKEN: env.META_ACCESS_TOKEN || '',
           META_ACCESS_TOKEN_2: env.META_ACCESS_TOKEN_2 || '',
           META_TEST_EVENT_CODE: env.META_TEST_EVENT_CODE,
           PIXEL_ID: env.PIXEL_ID,
           PIXEL_ID_2: env.PIXEL_ID_2 || PIXEL_ID_2,
-        }, {
+        };
+        const visitorData = await buildUserData(lead, {
+          client_ip_address: ip,
+          client_user_agent: userAgent,
+        });
+        void sendMetaEvent(metaEnv, {
+          event_name: 'InitiateCheckout',
+          event_id: checkoutEventId(lead.ref),
+          event_source_url: lead.landing_url || landingUrl(env),
+          user_data: visitorData,
+          custom_data: {},
+        });
+        if (lead.lead_enviado) {
+          console.log('[lead] Lead omitido, ya enviado');
+          return json(200, { ok: true, ref: lead.ref, event_id: lead.lead_event_id || eventId, already_sent: true }, origin);
+        }
+        const meta = await sendMetaEvent(metaEnv, {
           event_name: 'Lead',
           event_id: eventId,
           event_source_url: lead.landing_url || landingUrl(env),
-          user_data: await buildUserData(lead, {
-            client_ip_address: clientIp(request),
-            client_user_agent: asText(request.headers.get('User-Agent'), 400),
-          }),
+          user_data: visitorData,
           custom_data: {},
         });
         await env.DB.prepare(`
@@ -341,8 +373,8 @@ export default {
         const alreadyHadPurchase = Boolean(lead.purchase_enviado);
         const eventId = 'purchase_' + lead.ref + '_' + Date.now().toString(36);
         const purchaseUserData = await buildUserData(lead, {
-          client_ip_address: clientIp(request),
-          client_user_agent: asText(request.headers.get('User-Agent'), 400),
+          client_ip_address: storedOrRequest(lead.client_ip, clientIp(request)),
+          client_user_agent: storedOrRequest(lead.user_agent, asText(request.headers.get('User-Agent'), 400)),
         });
         const purchaseCustom = { currency: 'ARS', value: Number(monto.toFixed(2)), order_id: lead.ref };
         const metaEnv = {
@@ -355,13 +387,6 @@ export default {
         const meta = await sendMetaEvent(metaEnv, {
           event_name: 'Purchase',
           event_id: eventId,
-          event_source_url: lead.landing_url || landingUrl(env),
-          user_data: purchaseUserData,
-          custom_data: purchaseCustom,
-        });
-        await sendMetaEvent(metaEnv, {
-          event_name: 'InitiateCheckout',
-          event_id: 'ic_' + lead.ref + '_' + Date.now().toString(36),
           event_source_url: lead.landing_url || landingUrl(env),
           user_data: purchaseUserData,
           custom_data: purchaseCustom,

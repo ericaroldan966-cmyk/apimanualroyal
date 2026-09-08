@@ -21,6 +21,9 @@ import {
   normalizePhone,
   nowIso,
   pageViewEventId,
+  checkoutEventId,
+  firstForwardedIp,
+  storedOrRequest,
   pickSearchRef,
   publicLead,
   sendMetaEvent,
@@ -53,6 +56,13 @@ db.exec('PRAGMA journal_mode=WAL;');
 db.exec('PRAGMA busy_timeout=5000;');
 db.exec('PRAGMA synchronous=NORMAL;');
 db.exec(fs.readFileSync(path.join(API_ROOT, 'schema.sql'), 'utf8'));
+for (const column of ['client_ip', 'user_agent']) {
+  try {
+    db.exec('ALTER TABLE leads ADD COLUMN ' + column + ' TEXT');
+  } catch {
+    /* already exists */
+  }
+}
 const REF_LOG = '[ROYAL][REF]';
 console.log(REF_LOG, 'storage', dbPath, process.env.RAILWAY_VOLUME_MOUNT_PATH ? 'persistent-volume' : 'local-data-dir');
 
@@ -167,6 +177,28 @@ function updateAttribution(ref: string, attr: Attribution): LeadRow {
   return row;
 }
 
+function requestVisitorIp(req: http.IncomingMessage): string {
+  return firstForwardedIp(
+    String(req.headers['x-forwarded-for'] || ''),
+    String(req.headers['x-real-ip'] || ''),
+    String(req.headers['cf-connecting-ip'] || ''),
+    req.socket.remoteAddress || '',
+  );
+}
+
+function persistVisitorContext(ref: string, ip: string, userAgent: string): LeadRow {
+  db.prepare(`
+    UPDATE leads SET
+      client_ip = CASE WHEN client_ip IS NULL OR client_ip = '' THEN ? ELSE client_ip END,
+      user_agent = CASE WHEN user_agent IS NULL OR user_agent = '' THEN ? ELSE user_agent END,
+      updated_at = ?
+    WHERE ref = ?
+  `).run(ip, userAgent, nowIso(), ref);
+  const row = getLead(ref);
+  if (!row) throw new Error('No se pudo guardar el contexto del visitante.');
+  return row;
+}
+
 function upsertVisit(requestedRef: unknown, incoming: Attribution): LeadRow {
   const requested = pickSearchRef(String(requestedRef || ''));
   if (requested) {
@@ -233,14 +265,18 @@ const server = http.createServer(async (req, res) => {
         send(res, 400, { error: 'Cuerpo inválido.' }, origin);
         return;
       }
-      const lead = upsertVisit(body.ref, attributionFromBody(body));
+      const lead = persistVisitorContext(
+        upsertVisit(body.ref, attributionFromBody(body)).ref,
+        requestVisitorIp(req),
+        asText(req.headers['user-agent'], 400),
+      );
       console.log(REF_LOG, 'returned to landing', lead.ref);
       void sendMetaEvent(ENV, {
         event_name: 'PageView',
         event_id: pageViewEventId(lead.ref),
         event_source_url: lead.landing_url || DEFAULT_LANDING_URL,
         user_data: buildUserData(lead, {
-          client_ip_address: req.socket.remoteAddress || '',
+          client_ip_address: requestVisitorIp(req),
           client_user_agent: asText(req.headers['user-agent'], 400),
         }),
         custom_data: {},
@@ -256,8 +292,21 @@ const server = http.createServer(async (req, res) => {
         send(res, 400, { error: 'Cuerpo inválido.' }, origin);
         return;
       }
-      const lead = upsertVisit(body.ref, attributionFromBody(body));
+      const ip = requestVisitorIp(req);
+      const userAgent = asText(req.headers['user-agent'], 400);
+      const lead = persistVisitorContext(upsertVisit(body.ref, attributionFromBody(body)).ref, ip, userAgent);
       const eventId = asText(body.event_id, 80) || ('lead_' + lead.ref);
+      const visitorData = buildUserData(lead, {
+        client_ip_address: ip,
+        client_user_agent: userAgent,
+      });
+      void sendMetaEvent(ENV, {
+        event_name: 'InitiateCheckout',
+        event_id: checkoutEventId(lead.ref),
+        event_source_url: lead.landing_url || DEFAULT_LANDING_URL,
+        user_data: visitorData,
+        custom_data: {},
+      });
       if (lead.lead_enviado) {
         console.log('[lead] Lead omitido, ya enviado');
         send(res, 200, { ok: true, ref: lead.ref, event_id: lead.lead_event_id || eventId, already_sent: true }, origin);
@@ -267,10 +316,7 @@ const server = http.createServer(async (req, res) => {
         event_name: 'Lead',
         event_id: eventId,
         event_source_url: lead.landing_url || DEFAULT_LANDING_URL,
-        user_data: buildUserData(lead, {
-          client_ip_address: req.socket.remoteAddress || '',
-          client_user_agent: asText(req.headers['user-agent'], 400),
-        }),
+        user_data: visitorData,
         custom_data: {},
       });
       db.prepare(`
@@ -363,20 +409,13 @@ const server = http.createServer(async (req, res) => {
       const alreadyHadPurchase = Boolean(lead.purchase_enviado);
       const eventId = 'purchase_' + lead.ref + '_' + Date.now().toString(36);
       const purchaseUserData = buildUserData(lead, {
-        client_ip_address: req.socket.remoteAddress || '',
-        client_user_agent: asText(req.headers['user-agent'], 400),
+        client_ip_address: storedOrRequest(lead.client_ip, requestVisitorIp(req)),
+        client_user_agent: storedOrRequest(lead.user_agent, asText(req.headers['user-agent'], 400)),
       });
       const purchaseCustom = { currency: 'ARS', value: Number(monto.toFixed(2)), order_id: lead.ref };
       const meta = await sendMetaEvent(ENV, {
         event_name: 'Purchase',
         event_id: eventId,
-        event_source_url: lead.landing_url || DEFAULT_LANDING_URL,
-        user_data: purchaseUserData,
-        custom_data: purchaseCustom,
-      });
-      await sendMetaEvent(ENV, {
-        event_name: 'InitiateCheckout',
-        event_id: 'ic_' + lead.ref + '_' + Date.now().toString(36),
         event_source_url: lead.landing_url || DEFAULT_LANDING_URL,
         user_data: purchaseUserData,
         custom_data: purchaseCustom,

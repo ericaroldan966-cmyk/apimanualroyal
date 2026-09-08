@@ -21,6 +21,8 @@ CREATE TABLE IF NOT EXISTS leads (
   landing_url TEXT,
   referrer TEXT,
   telefono TEXT,
+  client_ip TEXT,
+  user_agent TEXT,
   lead_enviado INTEGER NOT NULL DEFAULT 0,
   lead_event_id TEXT,
   lead_sent_at TEXT,

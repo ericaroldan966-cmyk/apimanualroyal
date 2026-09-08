@@ -29,6 +29,8 @@ export type LeadRow = Attribution & {
   created_at: string;
   updated_at: string;
   status: string;
+  client_ip?: string | null;
+  user_agent?: string | null;
   lead_enviado: number;
   lead_event_id: string | null;
   lead_sent_at: string | null;
@@ -419,6 +421,23 @@ const META_BRAND = 'ROYAL';
 
 export function pageViewEventId(ref: string): string {
   return 'pv_' + ref;
+}
+
+export function checkoutEventId(ref: string): string {
+  return 'ic_' + ref;
+}
+
+export function firstForwardedIp(...values: Array<string | null | undefined>): string {
+  for (const value of values) {
+    const ip = String(value || '').split(',')[0].trim().replace(/^::ffff:/i, '');
+    if (ip) return ip;
+  }
+  return '';
+}
+
+export function storedOrRequest(stored: unknown, fallback: string): string {
+  const value = String(stored || '').trim();
+  return value || fallback;
 }
 
 export async function sendMetaEvent(
