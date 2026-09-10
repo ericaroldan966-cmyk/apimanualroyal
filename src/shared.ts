@@ -5,7 +5,6 @@ export const DEFAULT_LANDING_URL = 'https://ericaroldan966-cmyk.github.io/landin
 export const DEFAULT_KOVA_LANDING_URL = 'https://landing-kovaagency.vercel.app';
 export const DEFAULT_FANTASTICO_LANDING_URL = 'https://fantastico-public.vercel.app';
 export const FANTASTICO_PIXEL_ID = '1767312904299608';
-export const FANTASTICO_PIXEL_ID_2 = '1075060428238436';
 export const REF_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 export const TENANTS = ['royal', 'kova', 'fantastico'] as const;
 export type TenantId = (typeof TENANTS)[number];
@@ -160,7 +159,7 @@ export function tenantConfig(id: TenantId, env: TenantEnvSource = {}): TenantCon
       meta: {
         META_BRAND: 'FANTASTICO',
         PIXEL_ID: env.FANTASTICO_PIXEL_ID || FANTASTICO_PIXEL_ID,
-        PIXEL_ID_2: env.FANTASTICO_PIXEL_ID_2 || FANTASTICO_PIXEL_ID_2,
+        PIXEL_ID_2: env.FANTASTICO_PIXEL_ID_2 || '',
         META_ACCESS_TOKEN: env.FANTASTICO_META_ACCESS_TOKEN || '',
         META_ACCESS_TOKEN_2: env.FANTASTICO_META_ACCESS_TOKEN_2 || '',
         META_TEST_EVENT_CODE: testCode,
