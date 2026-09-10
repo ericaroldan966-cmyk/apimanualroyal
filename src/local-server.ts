@@ -53,7 +53,9 @@ const ENV = {
 const dataDir = process.env.RAILWAY_VOLUME_MOUNT_PATH || process.env.DATA_DIR || path.join(API_ROOT, 'data');
 if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
 const dbPath = path.join(dataDir, 'local.db');
+console.log('[API] boot', HOST + ':' + PORT, dbPath);
 const db = new DatabaseSync(dbPath);
+console.log('[API] sqlite open');
 db.exec('PRAGMA journal_mode=WAL;');
 db.exec('PRAGMA busy_timeout=5000;');
 db.exec('PRAGMA synchronous=NORMAL;');
@@ -86,14 +88,7 @@ if (tableExists('leads_v2')) {
   if (!tableExists('leads')) {
     db.exec('ALTER TABLE leads_v2 RENAME TO leads');
   } else {
-    const oldCount = Number((db.prepare('SELECT COUNT(*) AS n FROM leads').get() as { n: number }).n);
-    const copyCount = Number((db.prepare('SELECT COUNT(*) AS n FROM leads_v2').get() as { n: number }).n);
-    if (copyCount > oldCount) {
-      db.exec('DROP TABLE leads');
-      db.exec('ALTER TABLE leads_v2 RENAME TO leads');
-    } else {
-      db.exec('DROP TABLE leads_v2');
-    }
+    db.exec('DROP TABLE leads_v2');
   }
 }
 
