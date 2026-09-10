@@ -3,6 +3,9 @@ export const PIXEL_ID_2 = '1075060428238436';
 export const GRAPH_VERSION = 'v21.0';
 export const DEFAULT_LANDING_URL = 'https://ericaroldan966-cmyk.github.io/landingappganamos/';
 export const DEFAULT_KOVA_LANDING_URL = 'https://landing-kovaagency.vercel.app';
+export const DEFAULT_FANTASTICO_LANDING_URL = 'https://fantastico-public.vercel.app';
+export const FANTASTICO_PIXEL_ID = '1767312904299608';
+export const FANTASTICO_PIXEL_ID_2 = '1075060428238436';
 export const REF_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 export const TENANTS = ['royal', 'kova', 'fantastico'] as const;
 export type TenantId = (typeof TENANTS)[number];
@@ -153,11 +156,11 @@ export function tenantConfig(id: TenantId, env: TenantEnvSource = {}): TenantCon
   if (id === 'fantastico') {
     return {
       id,
-      landingUrl: String(env.FANTASTICO_LANDING_URL || '').replace(/\/$/, ''),
+      landingUrl: (env.FANTASTICO_LANDING_URL || DEFAULT_FANTASTICO_LANDING_URL).replace(/\/$/, ''),
       meta: {
         META_BRAND: 'FANTASTICO',
-        PIXEL_ID: env.FANTASTICO_PIXEL_ID || '',
-        PIXEL_ID_2: env.FANTASTICO_PIXEL_ID_2 || '',
+        PIXEL_ID: env.FANTASTICO_PIXEL_ID || FANTASTICO_PIXEL_ID,
+        PIXEL_ID_2: env.FANTASTICO_PIXEL_ID_2 || FANTASTICO_PIXEL_ID_2,
         META_ACCESS_TOKEN: env.FANTASTICO_META_ACCESS_TOKEN || '',
         META_ACCESS_TOKEN_2: env.FANTASTICO_META_ACCESS_TOKEN_2 || '',
         META_TEST_EVENT_CODE: testCode,
@@ -721,11 +724,17 @@ export async function sendMetaEvent(
   }
 
   if (pixel2Enabled) {
-    if (token2) {
-      pixel2Result = await sendToPixel(pixel2, token2, 'PIXEL_ID_2');
+    const pixel2Tokens: Array<{ token: string; label: string }> = [];
+    if (token2) pixel2Tokens.push({ token: token2, label: 'PIXEL_ID_2' });
+    if (token1 && token1 !== token2) pixel2Tokens.push({ token: token1, label: 'PIXEL_ID_2' });
+    if (!pixel2Tokens.length) {
+      console.log('[META][' + brand + '] ' + input.event_name + ' omitido → PIXEL_ID_2 (falta token)');
+      pixel2Result = { ok: false, error: 'Falta token para PIXEL_ID_2' };
     } else {
-      console.log('[META][' + brand + '] ' + input.event_name + ' omitido → PIXEL_ID_2 (falta META_ACCESS_TOKEN_2)');
-      pixel2Result = { ok: false, error: 'Falta META_ACCESS_TOKEN_2 para PIXEL_ID_2' };
+      for (const item of pixel2Tokens) {
+        pixel2Result = await sendToPixel(pixel2, item.token, item.label);
+        if (pixel2Result.ok) break;
+      }
     }
   } else {
     pixel2Result = { ok: true };
