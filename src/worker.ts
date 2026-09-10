@@ -542,7 +542,7 @@ export default {
         const tenant = tenantOf(request, env);
         const q = asText(url.searchParams.get('q'), 80);
         const sql = q
-          ? 'SELECT p.* ' + PURCHASE_LEAD_JOIN + ' WHERE l.tenant = ? AND (p.ref LIKE ? OR CAST(l.id AS TEXT) = ?) ORDER BY p.created_at DESC LIMIT 200'
+          ? 'SELECT p.* ' + PURCHASE_LEAD_JOIN + ' WHERE l.tenant = ? AND (p.ref LIKE ? OR CAST(l.rowid AS TEXT) = ?) ORDER BY p.created_at DESC LIMIT 200'
           : 'SELECT p.* ' + PURCHASE_LEAD_JOIN + ' WHERE l.tenant = ? ORDER BY p.created_at DESC LIMIT 200';
         const values = q ? [tenant.id, '%' + q.toUpperCase() + '%', q.trim()] : [tenant.id];
         const result = await env.DB.prepare(sql).bind(...values).all();
@@ -559,10 +559,10 @@ export default {
           const phone = normalizePhone(q);
           const ref = q.toUpperCase();
           if (phone) {
-            sql += ' AND (telefono = ? OR ref LIKE ? OR CAST(id AS TEXT) = ?)';
+            sql += ' AND (telefono = ? OR ref LIKE ? OR CAST(rowid AS TEXT) = ?)';
             values.push(phone, '%' + ref + '%', q);
           } else {
-            sql += ' AND (ref LIKE ? OR CAST(id AS TEXT) = ?)';
+            sql += ' AND (ref LIKE ? OR CAST(rowid AS TEXT) = ?)';
             values.push('%' + ref + '%', q);
           }
         }

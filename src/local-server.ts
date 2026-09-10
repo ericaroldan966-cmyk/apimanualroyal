@@ -76,78 +76,31 @@ for (const column of ['client_ip', 'user_agent', 'tenant']) {
 }
 db.exec('CREATE INDEX IF NOT EXISTS idx_leads_tenant ON leads(tenant)');
 
-function leadColInfo(): Array<{ name: string; pk: number }> {
-  return db.prepare('PRAGMA table_info(leads)').all() as Array<{ name: string; pk: number }>;
+function tableExists(name: string): boolean {
+  return Boolean(
+    db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name),
+  );
 }
 
-function needsPersonRebuild(): boolean {
-  const id = leadColInfo().find((column) => column.name === 'id');
-  return !id || Number(id.pk) !== 1;
+if (tableExists('leads_v2')) {
+  if (!tableExists('leads')) {
+    db.exec('ALTER TABLE leads_v2 RENAME TO leads');
+  } else {
+    const oldCount = Number((db.prepare('SELECT COUNT(*) AS n FROM leads').get() as { n: number }).n);
+    const copyCount = Number((db.prepare('SELECT COUNT(*) AS n FROM leads_v2').get() as { n: number }).n);
+    if (copyCount > oldCount) {
+      db.exec('DROP TABLE leads');
+      db.exec('ALTER TABLE leads_v2 RENAME TO leads');
+    } else {
+      db.exec('DROP TABLE leads_v2');
+    }
+  }
 }
 
-if (needsPersonRebuild()) {
-  const cols = tableColumns('leads');
-  const has = (name: string) => cols.includes(name);
-  db.exec('DROP TABLE IF EXISTS leads_v2');
-  db.exec(`
-    CREATE TABLE leads_v2 (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      ref TEXT NOT NULL UNIQUE,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL,
-      status TEXT NOT NULL DEFAULT 'VISIT',
-      fbclid TEXT, fbp TEXT, fbc TEXT,
-      utm_source TEXT, utm_medium TEXT, utm_campaign TEXT, utm_content TEXT, utm_term TEXT,
-      campaign_id TEXT, adset_id TEXT, ad_id TEXT,
-      campaign_name TEXT, adset_name TEXT, ad_name TEXT,
-      landing_url TEXT, referrer TEXT, telefono TEXT,
-      client_ip TEXT, user_agent TEXT,
-      tenant TEXT NOT NULL DEFAULT 'royal',
-      ad INTEGER,
-      lead_enviado INTEGER NOT NULL DEFAULT 0,
-      lead_event_id TEXT, lead_sent_at TEXT, lead_events_received INTEGER, lead_meta_error TEXT,
-      purchase_enviado INTEGER NOT NULL DEFAULT 0,
-      purchase_event_id TEXT, monto_purchase REAL, fecha_purchase TEXT,
-      purchase_events_received INTEGER, purchase_meta_error TEXT
-    )
-  `);
-  db.exec(`
-    INSERT INTO leads_v2 (
-      ref, created_at, updated_at, status,
-      fbclid, fbp, fbc, utm_source, utm_medium, utm_campaign, utm_content, utm_term,
-      campaign_id, adset_id, ad_id, campaign_name, adset_name, ad_name,
-      landing_url, referrer, telefono, client_ip, user_agent, tenant, ad,
-      lead_enviado, lead_event_id, lead_sent_at, lead_events_received, lead_meta_error,
-      purchase_enviado, purchase_event_id, monto_purchase, fecha_purchase,
-      purchase_events_received, purchase_meta_error
-    )
-    SELECT
-      ref, created_at, updated_at, status,
-      fbclid, fbp, fbc, utm_source, utm_medium, utm_campaign, utm_content, utm_term,
-      campaign_id, adset_id, ad_id, campaign_name, adset_name, ad_name,
-      landing_url, referrer, telefono,
-      ${has('client_ip') ? 'client_ip' : 'NULL'},
-      ${has('user_agent') ? 'user_agent' : 'NULL'},
-      ${has('tenant') ? 'tenant' : "'royal'"},
-      ${has('ad') ? 'ad' : 'NULL'},
-      lead_enviado, lead_event_id, lead_sent_at, lead_events_received, lead_meta_error,
-      purchase_enviado, purchase_event_id, monto_purchase, fecha_purchase,
-      purchase_events_received, purchase_meta_error
-    FROM leads
-    ORDER BY created_at ASC, ref ASC
-  `);
-  db.exec('DROP TABLE leads');
-  db.exec('ALTER TABLE leads_v2 RENAME TO leads');
-  db.exec(`
-    CREATE INDEX IF NOT EXISTS idx_leads_telefono ON leads(telefono);
-    CREATE INDEX IF NOT EXISTS idx_leads_created ON leads(created_at);
-    CREATE INDEX IF NOT EXISTS idx_leads_ad_id ON leads(ad_id);
-    CREATE INDEX IF NOT EXISTS idx_leads_campaign_id ON leads(campaign_id);
-    CREATE INDEX IF NOT EXISTS idx_leads_tenant ON leads(tenant);
-  `);
-  console.log('[API] leads rebuilt with numeric person id');
-} else if (!tableColumns('leads').includes('ad')) {
+try {
   db.exec('ALTER TABLE leads ADD COLUMN ad INTEGER');
+} catch {
+  /* already exists */
 }
 
 if (tableColumns('ad_spend').length && !tableColumns('ad_spend').includes('tenant')) {
@@ -240,12 +193,19 @@ function sha256(value: unknown): string | null {
   return createHash('sha256').update(normalized).digest('hex');
 }
 
+function asLead(row: unknown): LeadRow | null {
+  if (!row || typeof row !== 'object') return null;
+  const raw = row as LeadRow & { rowid?: number };
+  const id = Number(raw.id || raw.rowid || 0);
+  return { ...raw, id: id > 0 ? id : undefined, ad: Number(raw.ad) || 0 };
+}
+
 function getLeadById(id: number): LeadRow | null {
-  return (db.prepare('SELECT * FROM leads WHERE id = ?').get(id) as LeadRow | undefined) || null;
+  return asLead(db.prepare('SELECT rowid, * FROM leads WHERE rowid = ?').get(id));
 }
 
 function getLeadByRef(ref: string): LeadRow | null {
-  return (db.prepare('SELECT * FROM leads WHERE ref = ?').get(ref) as LeadRow | undefined) || null;
+  return asLead(db.prepare('SELECT rowid, * FROM leads WHERE ref = ?').get(ref));
 }
 
 function findLead(code: string, tenant?: TenantId): LeadRow | null {
@@ -279,7 +239,7 @@ function insertLead(attr: Attribution, status: string, tenant: TenantId): LeadRo
       attr.landing_url, attr.referrer, attr.telefono,
     );
     const id = Number(result.lastInsertRowid);
-    db.prepare('UPDATE leads SET ref = ? WHERE id = ?').run(String(id), id);
+    db.prepare('UPDATE leads SET ref = ? WHERE rowid = ?').run(String(id), id);
     const row = getLeadById(id);
     if (!row) throw new Error('No se pudo crear el lead.');
     db.exec('COMMIT');
@@ -300,7 +260,7 @@ function updateAttribution(lead: LeadRow, attr: Attribution): LeadRow {
       campaign_id = ?, adset_id = ?, ad_id = ?,
       campaign_name = ?, adset_name = ?, ad_name = ?,
       landing_url = ?, referrer = ?, telefono = ?
-    WHERE id = ?
+    WHERE rowid = ?
   `).run(
     nowIso(),
     attr.ad > 0 ? attr.ad : (Number(lead.ad) > 0 ? Number(lead.ad) : null),
@@ -331,7 +291,7 @@ function persistVisitorContext(lead: LeadRow, ip: string, userAgent: string): Le
       client_ip = CASE WHEN client_ip IS NULL OR client_ip = '' THEN ? ELSE client_ip END,
       user_agent = CASE WHEN user_agent IS NULL OR user_agent = '' THEN ? ELSE user_agent END,
       updated_at = ?
-    WHERE id = ?
+    WHERE rowid = ?
   `).run(ip, userAgent, nowIso(), lead.id);
   const row = getLeadById(Number(lead.id));
   if (!row) throw new Error('No se pudo guardar el contexto del visitante.');
@@ -524,7 +484,7 @@ const server = http.createServer(async (req, res) => {
       if (searchRef) row = findLead(searchRef, tenant.id);
       const phone = normalizePhone(q);
       if (!row && phone) {
-        row = db.prepare('SELECT * FROM leads WHERE telefono = ? AND tenant = ? ORDER BY created_at DESC LIMIT 1').get(phone, tenant.id) as LeadRow | undefined || null;
+        row = asLead(db.prepare('SELECT rowid, * FROM leads WHERE telefono = ? AND tenant = ? ORDER BY created_at DESC LIMIT 1').get(phone, tenant.id));
       }
       if (!row) row = findLead(q, tenant.id);
       if (!row) {
@@ -696,7 +656,7 @@ const server = http.createServer(async (req, res) => {
       const tenant = tenantOf(req, url);
       const q = asText(url.searchParams.get('q'), 80);
       const rows = q
-        ? db.prepare('SELECT p.* ' + PURCHASE_LEAD_JOIN + ' WHERE l.tenant = ? AND (p.ref LIKE ? OR CAST(l.id AS TEXT) = ?) ORDER BY p.created_at DESC LIMIT 200').all(tenant.id, '%' + q.toUpperCase() + '%', q.trim())
+        ? db.prepare('SELECT p.* ' + PURCHASE_LEAD_JOIN + ' WHERE l.tenant = ? AND (p.ref LIKE ? OR CAST(l.rowid AS TEXT) = ?) ORDER BY p.created_at DESC LIMIT 200').all(tenant.id, '%' + q.toUpperCase() + '%', q.trim())
         : db.prepare('SELECT p.* ' + PURCHASE_LEAD_JOIN + ' WHERE l.tenant = ? ORDER BY p.created_at DESC LIMIT 200').all(tenant.id);
       send(res, 200, { ok: true, purchases: rows }, origin);
       return;
@@ -709,14 +669,14 @@ const server = http.createServer(async (req, res) => {
       if (q) {
         const phone = normalizePhone(q);
         if (phone) {
-          rows = db.prepare('SELECT * FROM leads WHERE tenant = ? AND (telefono = ? OR ref LIKE ? OR CAST(id AS TEXT) = ?) ORDER BY created_at DESC LIMIT 200').all(tenant.id, phone, '%' + q.toUpperCase() + '%', q) as LeadRow[];
+          rows = db.prepare('SELECT rowid, * FROM leads WHERE tenant = ? AND (telefono = ? OR ref LIKE ? OR CAST(rowid AS TEXT) = ?) ORDER BY created_at DESC LIMIT 200').all(tenant.id, phone, '%' + q.toUpperCase() + '%', q) as LeadRow[];
         } else {
-          rows = db.prepare('SELECT * FROM leads WHERE tenant = ? AND (ref LIKE ? OR CAST(id AS TEXT) = ?) ORDER BY created_at DESC LIMIT 200').all(tenant.id, '%' + q.toUpperCase() + '%', q) as LeadRow[];
+          rows = db.prepare('SELECT rowid, * FROM leads WHERE tenant = ? AND (ref LIKE ? OR CAST(rowid AS TEXT) = ?) ORDER BY created_at DESC LIMIT 200').all(tenant.id, '%' + q.toUpperCase() + '%', q) as LeadRow[];
         }
       } else {
-        rows = db.prepare('SELECT * FROM leads WHERE tenant = ? ORDER BY created_at DESC LIMIT 200').all(tenant.id) as LeadRow[];
+        rows = db.prepare('SELECT rowid, * FROM leads WHERE tenant = ? ORDER BY created_at DESC LIMIT 200').all(tenant.id) as LeadRow[];
       }
-      send(res, 200, { ok: true, leads: rows.map(publicLead) }, origin);
+      send(res, 200, { ok: true, leads: rows.map((row) => publicLead(asLead(row))) }, origin);
       return;
     }
 

@@ -558,7 +558,7 @@ function metaBrand(env: MetaEnv): string {
 }
 
 export const PURCHASE_LEAD_JOIN =
-  'FROM purchases p INNER JOIN leads l ON (l.ref = p.ref OR CAST(l.id AS TEXT) = p.ref)';
+  'FROM purchases p INNER JOIN leads l ON (l.ref = p.ref OR CAST(l.rowid AS TEXT) = p.ref)';
 
 export function pageViewEventId(ref: string): string {
   return 'pv_' + ref;
