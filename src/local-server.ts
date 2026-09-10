@@ -25,6 +25,7 @@ import {
   pickSearchRef,
   publicCode,
   publicLead,
+  PURCHASE_LEAD_JOIN,
   isPersonId,
   resolveTenantId,
   sendMetaEvent,
@@ -87,6 +88,7 @@ function needsPersonRebuild(): boolean {
 if (needsPersonRebuild()) {
   const cols = tableColumns('leads');
   const has = (name: string) => cols.includes(name);
+  db.exec('DROP TABLE IF EXISTS leads_v2');
   db.exec(`
     CREATE TABLE leads_v2 (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -261,24 +263,31 @@ function findLead(code: string, tenant?: TenantId): LeadRow | null {
 function insertLead(attr: Attribution, status: string, tenant: TenantId): LeadRow {
   const created = nowIso();
   const temp = 'TMP-' + randomBytes(8).toString('hex');
-  const result = db.prepare(`
-    INSERT INTO leads (
-      ref, created_at, updated_at, status, tenant, ad,
-      fbclid, fbp, fbc, utm_source, utm_medium, utm_campaign, utm_content, utm_term,
-      campaign_id, adset_id, ad_id, campaign_name, adset_name, ad_name,
-      landing_url, referrer, telefono
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
-    temp, created, created, status, tenant, attr.ad > 0 ? attr.ad : null,
-    attr.fbclid, attr.fbp, attr.fbc, attr.utm_source, attr.utm_medium, attr.utm_campaign, attr.utm_content, attr.utm_term,
-    attr.campaign_id, attr.adset_id, attr.ad_id, attr.campaign_name, attr.adset_name, attr.ad_name,
-    attr.landing_url, attr.referrer, attr.telefono,
-  );
-  const id = Number(result.lastInsertRowid);
-  db.prepare('UPDATE leads SET ref = ? WHERE id = ?').run(String(id), id);
-  const row = getLeadById(id);
-  if (!row) throw new Error('No se pudo crear el lead.');
-  return row;
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const result = db.prepare(`
+      INSERT INTO leads (
+        ref, created_at, updated_at, status, tenant, ad,
+        fbclid, fbp, fbc, utm_source, utm_medium, utm_campaign, utm_content, utm_term,
+        campaign_id, adset_id, ad_id, campaign_name, adset_name, ad_name,
+        landing_url, referrer, telefono
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      temp, created, created, status, tenant, attr.ad > 0 ? attr.ad : null,
+      attr.fbclid, attr.fbp, attr.fbc, attr.utm_source, attr.utm_medium, attr.utm_campaign, attr.utm_content, attr.utm_term,
+      attr.campaign_id, attr.adset_id, attr.ad_id, attr.campaign_name, attr.adset_name, attr.ad_name,
+      attr.landing_url, attr.referrer, attr.telefono,
+    );
+    const id = Number(result.lastInsertRowid);
+    db.prepare('UPDATE leads SET ref = ? WHERE id = ?').run(String(id), id);
+    const row = getLeadById(id);
+    if (!row) throw new Error('No se pudo crear el lead.');
+    db.exec('COMMIT');
+    return row;
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
 }
 
 function updateAttribution(lead: LeadRow, attr: Attribution): LeadRow {
@@ -653,7 +662,7 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       db.prepare(`
-        INSERT INTO ad_spend (tenant, day, usd, fx, updated_at) VALUES (?, ?, ?, ?)
+        INSERT INTO ad_spend (tenant, day, usd, fx, updated_at) VALUES (?, ?, ?, ?, ?)
         ON CONFLICT(tenant, day) DO UPDATE SET usd = excluded.usd, fx = excluded.fx, updated_at = excluded.updated_at
       `).run(tenant.id, day, Math.round(usd * 100) / 100, Math.round(fx * 100) / 100, nowIso());
       const row = db.prepare('SELECT day, usd, fx, updated_at FROM ad_spend WHERE tenant = ? AND day = ?').get(tenant.id, day) as { day: string; usd: number; fx: number; updated_at: string };
@@ -673,7 +682,7 @@ const server = http.createServer(async (req, res) => {
         created_at: string;
       }>;
       const purchases = db.prepare(
-        'SELECT p.ref, p.monto, p.created_at FROM purchases p INNER JOIN leads l ON l.ref = p.ref WHERE l.tenant = ?',
+        'SELECT p.ref, p.monto, p.created_at ' + PURCHASE_LEAD_JOIN + ' WHERE l.tenant = ?',
       ).all(tenant.id) as Array<{
         ref: string;
         monto: number;
@@ -687,8 +696,8 @@ const server = http.createServer(async (req, res) => {
       const tenant = tenantOf(req, url);
       const q = asText(url.searchParams.get('q'), 80);
       const rows = q
-        ? db.prepare('SELECT p.* FROM purchases p INNER JOIN leads l ON l.ref = p.ref WHERE l.tenant = ? AND p.ref LIKE ? ORDER BY p.created_at DESC LIMIT 200').all(tenant.id, '%' + q.toUpperCase() + '%')
-        : db.prepare('SELECT p.* FROM purchases p INNER JOIN leads l ON l.ref = p.ref WHERE l.tenant = ? ORDER BY p.created_at DESC LIMIT 200').all(tenant.id);
+        ? db.prepare('SELECT p.* ' + PURCHASE_LEAD_JOIN + ' WHERE l.tenant = ? AND (p.ref LIKE ? OR CAST(l.id AS TEXT) = ?) ORDER BY p.created_at DESC LIMIT 200').all(tenant.id, '%' + q.toUpperCase() + '%', q.trim())
+        : db.prepare('SELECT p.* ' + PURCHASE_LEAD_JOIN + ' WHERE l.tenant = ? ORDER BY p.created_at DESC LIMIT 200').all(tenant.id);
       send(res, 200, { ok: true, purchases: rows }, origin);
       return;
     }

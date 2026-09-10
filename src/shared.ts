@@ -338,10 +338,8 @@ export function pickSearchRef(q: string): string {
     if (isLegacyRef(next)) return next;
   }
   if (isPersonId(raw)) return raw;
-  const fromMessage = raw.match(/(?:información\.\s*)(\d{1,10})(?:\s+quiero)/i) || raw.match(/\s(\d{1,10})\s+quiero/i);
+  const fromMessage = raw.match(/(?:informaci[oó]n\.\s*)(\d{1,10})(?:\s+quiero)/i) || raw.match(/\s(\d{1,10})\s+quiero mi/i);
   if (fromMessage && isPersonId(fromMessage[1])) return fromMessage[1];
-  const numbers = raw.match(/\d{1,10}/g);
-  if (numbers && numbers.length === 1 && isPersonId(numbers[0])) return numbers[0];
   const compact = upper.replace(/[^A-Z0-9]/g, '');
   if (compact.startsWith('REF') && compact.length >= 9 && compact.length <= 15) {
     const next = 'REF-' + compact.slice(3);
@@ -558,6 +556,9 @@ export function buildStats(range: StatsRange, leads: LeadStatRow[], purchases: P
 function metaBrand(env: MetaEnv): string {
   return String(env.META_BRAND || 'ROYAL').toUpperCase();
 }
+
+export const PURCHASE_LEAD_JOIN =
+  'FROM purchases p INNER JOIN leads l ON (l.ref = p.ref OR CAST(l.id AS TEXT) = p.ref)';
 
 export function pageViewEventId(ref: string): string {
   return 'pv_' + ref;

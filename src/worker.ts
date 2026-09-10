@@ -19,6 +19,7 @@
   pickSearchRef,
   publicCode,
   publicLead,
+  PURCHASE_LEAD_JOIN,
   isPersonId,
   resolveTenantId,
   sendMetaEvent,
@@ -509,7 +510,7 @@ export default {
         if (!(usd >= 0) || !Number.isFinite(usd)) return json(400, { error: 'IngresÃ¡ el gasto en dÃ³lares.' }, origin);
         if (!(fx >= 0) || !Number.isFinite(fx)) return json(400, { error: 'IngresÃ¡ la cotizaciÃ³n.' }, origin);
         await env.DB.prepare(`
-          INSERT INTO ad_spend (tenant, day, usd, fx, updated_at) VALUES (?, ?, ?, ?)
+          INSERT INTO ad_spend (tenant, day, usd, fx, updated_at) VALUES (?, ?, ?, ?, ?)
           ON CONFLICT(tenant, day) DO UPDATE SET usd = excluded.usd, fx = excluded.fx, updated_at = excluded.updated_at
         `).bind(tenant.id, day, Math.round(usd * 100) / 100, Math.round(fx * 100) / 100, nowIso()).run();
         const row = await env.DB.prepare('SELECT day, usd, fx, updated_at FROM ad_spend WHERE tenant = ? AND day = ?').bind(tenant.id, day).first() as { day: string; usd: number; fx: number; updated_at: string };
@@ -523,7 +524,7 @@ export default {
           'SELECT ref, lead_enviado, purchase_enviado, lead_sent_at, created_at FROM leads WHERE tenant = ?',
         ).bind(tenant.id).all();
         const purchaseResult = await env.DB.prepare(
-          'SELECT p.ref, p.monto, p.created_at FROM purchases p INNER JOIN leads l ON l.ref = p.ref WHERE l.tenant = ?',
+          'SELECT p.ref, p.monto, p.created_at ' + PURCHASE_LEAD_JOIN + ' WHERE l.tenant = ?',
         ).bind(tenant.id).all();
         return json(
           200,
@@ -541,9 +542,9 @@ export default {
         const tenant = tenantOf(request, env);
         const q = asText(url.searchParams.get('q'), 80);
         const sql = q
-          ? 'SELECT p.* FROM purchases p INNER JOIN leads l ON l.ref = p.ref WHERE l.tenant = ? AND p.ref LIKE ? ORDER BY p.created_at DESC LIMIT 200'
-          : 'SELECT p.* FROM purchases p INNER JOIN leads l ON l.ref = p.ref WHERE l.tenant = ? ORDER BY p.created_at DESC LIMIT 200';
-        const values = q ? [tenant.id, '%' + q.toUpperCase() + '%'] : [tenant.id];
+          ? 'SELECT p.* ' + PURCHASE_LEAD_JOIN + ' WHERE l.tenant = ? AND (p.ref LIKE ? OR CAST(l.id AS TEXT) = ?) ORDER BY p.created_at DESC LIMIT 200'
+          : 'SELECT p.* ' + PURCHASE_LEAD_JOIN + ' WHERE l.tenant = ? ORDER BY p.created_at DESC LIMIT 200';
+        const values = q ? [tenant.id, '%' + q.toUpperCase() + '%', q.trim()] : [tenant.id];
         const result = await env.DB.prepare(sql).bind(...values).all();
         return json(200, { ok: true, purchases: result.results || [] }, origin);
       }

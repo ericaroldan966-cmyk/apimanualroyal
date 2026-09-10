@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
-import { isValidRef, pickSearchRef, publicCode } from '../src/shared.ts';
+import { isValidRef, pickSearchRef, publicCode, PURCHASE_LEAD_JOIN } from '../src/shared.ts';
 
 const failures: string[] = [];
 function assert(condition: unknown, message: string): void {
@@ -78,6 +78,8 @@ assert(pickSearchRef('REF-A8K92P') === 'REF-A8K92P', 'TEST3 exact legacy');
 assert(pickSearchRef('ref-a8k92p') === 'REF-A8K92P', 'TEST3 lower');
 assert(pickSearchRef('Hola, quiero más información. REF-A8K92P') === 'REF-A8K92P', 'TEST3 pasted REF');
 assert(pickSearchRef('Hola, quiero más información. 47 quiero mi 100%!') === '47', 'TEST3 pasted number');
+assert(pickSearchRef('Hola, quiero mas informacion. 47 quiero mi 100%!') === '47', 'TEST3 pasted number without accent');
+assert(pickSearchRef('quiero mi 100%!') !== '100', 'TEST3 100 percent is not a person id');
 assert(pickSearchRef('47') === '47', 'TEST3 person id');
 assert(pickSearchRef('123456') === '123456', 'TEST3 digits are not REF-');
 assert(pickSearchRef('A8K92P') === 'REF-A8K92P', 'TEST3 suffix');
@@ -104,7 +106,15 @@ db.prepare(`
   INSERT INTO leads (ref, created_at, updated_at, status, tenant)
   VALUES (?, ?, ?, 'VISIT', 'royal')
 `).run('REF-A8K92P', now, now);
-assert(findLead('REF-A8K92P', 'royal')?.ref === 'REF-A8K92P', 'TEST7 old REF still searchable');
+const legacy = findLead('REF-A8K92P', 'royal');
+assert(legacy?.ref === 'REF-A8K92P', 'TEST7 old REF still searchable');
+if (legacy) {
+  db.prepare('INSERT INTO purchases (ref, monto, event_id, created_at) VALUES (?, ?, ?, ?)').run(String(legacy.id), 1000, 'purchase_' + legacy.id + '_x', now);
+  const joined = db.prepare('SELECT p.monto ' + PURCHASE_LEAD_JOIN + ' WHERE l.tenant = ? AND CAST(l.id AS TEXT) = ?').get('royal', String(legacy.id)) as { monto: number } | undefined;
+  assert(joined?.monto === 1000, 'TEST7 purchase on old REF joins by numeric id');
+  const missed = db.prepare('SELECT p.monto ' + PURCHASE_LEAD_JOIN + ' WHERE l.tenant = ?').get('kova') as { monto: number } | undefined;
+  assert(!missed, 'TEST7 kova does not see royal purchase');
+}
 
 db.close();
 const reopened = new DatabaseSync(dbPath);
