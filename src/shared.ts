@@ -229,6 +229,19 @@ export function publicCode(row: { id?: number | null; ref?: string } | null | un
   return String(row.ref || '');
 }
 
+export function unwrapDisplayCode(value: string): string {
+  const raw = String(value || '').trim();
+  const visual = raw.toUpperCase().match(/^REF-(\d{1,10})$/);
+  if (visual) return visual[1];
+  return raw;
+}
+
+export function displayCode(value: string): string {
+  const raw = unwrapDisplayCode(value);
+  if (isPersonId(raw)) return 'REF-' + raw;
+  return raw;
+}
+
 export function parseAd(value: unknown): number {
   const n = Number(value);
   if (Number.isInteger(n) && n >= 1 && n <= 999999) return n;
@@ -324,26 +337,36 @@ export function normalizeRefQuery(q: string): string {
 }
 
 export function isValidRef(ref: string): boolean {
-  const raw = String(ref || '').trim();
+  const raw = unwrapDisplayCode(ref);
   return isPersonId(raw) || isLegacyRef(raw);
 }
 
 export function pickSearchRef(q: string): string {
   const raw = String(q || '').trim();
   const upper = raw.toUpperCase();
+  const visualMatches = [...upper.matchAll(/REF[\s\-]*(\d{1,10})(?![A-Z0-9])/g)];
+  if (visualMatches.length) {
+    const last = visualMatches[visualMatches.length - 1][1];
+    if (isPersonId(last)) return last;
+  }
   const matches = upper.match(/REF[\s\-]*[A-Z0-9]{6,12}/g);
   if (matches && matches.length) {
     const last = matches[matches.length - 1].replace(/[^A-Z0-9]/g, '');
     const next = 'REF-' + last.slice(3);
     if (isLegacyRef(next)) return next;
   }
-  if (isPersonId(raw)) return raw;
+  const unwrapped = unwrapDisplayCode(raw);
+  if (isPersonId(unwrapped)) return unwrapped;
   const fromMessage = raw.match(/(?:informaci[oó]n\.\s*)(\d{1,10})(?:\s+quiero)/i) || raw.match(/\s(\d{1,10})\s+quiero mi/i);
   if (fromMessage && isPersonId(fromMessage[1])) return fromMessage[1];
   const compact = upper.replace(/[^A-Z0-9]/g, '');
-  if (compact.startsWith('REF') && compact.length >= 9 && compact.length <= 15) {
-    const next = 'REF-' + compact.slice(3);
-    return isLegacyRef(next) ? next : '';
+  if (compact.startsWith('REF')) {
+    const rest = compact.slice(3);
+    if (isPersonId(rest)) return rest;
+    if (compact.length >= 9 && compact.length <= 15) {
+      const next = 'REF-' + rest;
+      return isLegacyRef(next) ? next : '';
+    }
   }
   if (/^[A-Z0-9]{6,12}$/.test(compact) && /[A-Z]/.test(compact)) return 'REF-' + compact;
   return '';

@@ -25,6 +25,7 @@ import {
   storedOrRequest,
   pickSearchRef,
   publicCode,
+  unwrapDisplayCode,
   publicLead,
   PURCHASE_LEAD_JOIN,
   isPersonId,
@@ -159,7 +160,7 @@ function getLeadByRef(ref: string): LeadRow | null {
 }
 
 function findLead(code: string, tenant?: TenantId): LeadRow | null {
-  const raw = String(code || '').trim();
+  const raw = unwrapDisplayCode(String(code || '').trim());
   if (!raw) return null;
   let row: LeadRow | null = null;
   if (isPersonId(raw)) row = getLeadById(Number(raw));
@@ -610,8 +611,9 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && url.pathname === '/api/purchases') {
       const tenant = tenantOf(req, url);
       const q = asText(url.searchParams.get('q'), 80);
+      const code = pickSearchRef(q) || q.trim();
       const rows = q
-        ? db.prepare('SELECT p.* ' + PURCHASE_LEAD_JOIN + ' WHERE l.tenant = ? AND (p.ref LIKE ? OR CAST(l.rowid AS TEXT) = ?) ORDER BY p.created_at DESC LIMIT 200').all(tenant.id, '%' + q.toUpperCase() + '%', q.trim())
+        ? db.prepare('SELECT p.* ' + PURCHASE_LEAD_JOIN + ' WHERE l.tenant = ? AND (p.ref LIKE ? OR CAST(l.rowid AS TEXT) = ?) ORDER BY p.created_at DESC LIMIT 200').all(tenant.id, '%' + code.toUpperCase() + '%', code)
         : db.prepare('SELECT p.* ' + PURCHASE_LEAD_JOIN + ' WHERE l.tenant = ? ORDER BY p.created_at DESC LIMIT 200').all(tenant.id);
       send(res, 200, { ok: true, purchases: rows }, origin);
       return;
@@ -620,13 +622,14 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && url.pathname === '/api/leads') {
       const tenant = tenantOf(req, url);
       const q = asText(url.searchParams.get('q'), 80);
+      const code = pickSearchRef(q) || q;
       let rows: LeadRow[];
       if (q) {
         const phone = normalizePhone(q);
         if (phone) {
-          rows = db.prepare('SELECT rowid, * FROM leads WHERE tenant = ? AND (telefono = ? OR ref LIKE ? OR CAST(rowid AS TEXT) = ?) ORDER BY created_at DESC LIMIT 200').all(tenant.id, phone, '%' + q.toUpperCase() + '%', q) as LeadRow[];
+          rows = db.prepare('SELECT rowid, * FROM leads WHERE tenant = ? AND (telefono = ? OR ref LIKE ? OR CAST(rowid AS TEXT) = ?) ORDER BY created_at DESC LIMIT 200').all(tenant.id, phone, '%' + code.toUpperCase() + '%', code) as LeadRow[];
         } else {
-          rows = db.prepare('SELECT rowid, * FROM leads WHERE tenant = ? AND (ref LIKE ? OR CAST(rowid AS TEXT) = ?) ORDER BY created_at DESC LIMIT 200').all(tenant.id, '%' + q.toUpperCase() + '%', q) as LeadRow[];
+          rows = db.prepare('SELECT rowid, * FROM leads WHERE tenant = ? AND (ref LIKE ? OR CAST(rowid AS TEXT) = ?) ORDER BY created_at DESC LIMIT 200').all(tenant.id, '%' + code.toUpperCase() + '%', code) as LeadRow[];
         }
       } else {
         rows = db.prepare('SELECT rowid, * FROM leads WHERE tenant = ? ORDER BY created_at DESC LIMIT 200').all(tenant.id) as LeadRow[];

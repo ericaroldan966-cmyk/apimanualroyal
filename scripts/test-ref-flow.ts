@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
-import { isValidRef, pickSearchRef, publicCode, PURCHASE_LEAD_JOIN } from '../src/shared.ts';
+import { displayCode, isValidRef, pickSearchRef, publicCode, PURCHASE_LEAD_JOIN } from '../src/shared.ts';
 
 const failures: string[] = [];
 function assert(condition: unknown, message: string): void {
@@ -79,6 +79,10 @@ assert(pickSearchRef('ref-a8k92p') === 'REF-A8K92P', 'TEST3 lower');
 assert(pickSearchRef('Hola, quiero más información. REF-A8K92P') === 'REF-A8K92P', 'TEST3 pasted REF');
 assert(pickSearchRef('Hola, quiero más información. 47 quiero mi 100%!') === '47', 'TEST3 pasted number');
 assert(pickSearchRef('Hola, quiero mas informacion. 47 quiero mi 100%!') === '47', 'TEST3 pasted number without accent');
+assert(pickSearchRef('REF-47') === '47', 'TEST3 visual REF is only a wrapper');
+assert(pickSearchRef('Hola, quiero más información. REF-47 quiero mi 100%!') === '47', 'TEST3 pasted visual REF');
+assert(displayCode('47') === 'REF-47', 'TEST3 WhatsApp shows REF-47');
+assert(isValidRef('REF-47'), 'TEST3 visual REF is valid');
 assert(pickSearchRef('quiero mi 100%!') !== '100', 'TEST3 100 percent is not a person id');
 assert(pickSearchRef('47') === '47', 'TEST3 person id');
 assert(pickSearchRef('123456') === '123456', 'TEST3 digits are not REF-');

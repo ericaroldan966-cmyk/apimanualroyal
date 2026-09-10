@@ -18,6 +18,7 @@
   storedOrRequest,
   pickSearchRef,
   publicCode,
+  unwrapDisplayCode,
   publicLead,
   PURCHASE_LEAD_JOIN,
   isPersonId,
@@ -145,7 +146,7 @@ async function getLeadByRef(db: D1Database, ref: string): Promise<LeadRow | null
 }
 
 async function findLead(db: D1Database, code: string, tenant?: TenantId): Promise<LeadRow | null> {
-  const raw = String(code || '').trim();
+  const raw = unwrapDisplayCode(String(code || '').trim());
   if (!raw) return null;
   let row: LeadRow | null = null;
   if (isPersonId(raw)) row = await getLeadById(db, Number(raw));
@@ -541,10 +542,11 @@ export default {
         if (!env.DB) return json(503, { error: 'Base D1 no conectada.' }, origin);
         const tenant = tenantOf(request, env);
         const q = asText(url.searchParams.get('q'), 80);
+        const code = pickSearchRef(q) || q.trim();
         const sql = q
           ? 'SELECT p.* ' + PURCHASE_LEAD_JOIN + ' WHERE l.tenant = ? AND (p.ref LIKE ? OR CAST(l.rowid AS TEXT) = ?) ORDER BY p.created_at DESC LIMIT 200'
           : 'SELECT p.* ' + PURCHASE_LEAD_JOIN + ' WHERE l.tenant = ? ORDER BY p.created_at DESC LIMIT 200';
-        const values = q ? [tenant.id, '%' + q.toUpperCase() + '%', q.trim()] : [tenant.id];
+        const values = q ? [tenant.id, '%' + code.toUpperCase() + '%', code] : [tenant.id];
         const result = await env.DB.prepare(sql).bind(...values).all();
         return json(200, { ok: true, purchases: result.results || [] }, origin);
       }
@@ -553,17 +555,18 @@ export default {
         if (!env.DB) return json(503, { error: 'Base D1 no conectada.' }, origin);
         const tenant = tenantOf(request, env);
         const q = asText(url.searchParams.get('q'), 80);
+        const code = pickSearchRef(q) || q;
         let sql = 'SELECT * FROM leads WHERE tenant = ?';
         const values: string[] = [tenant.id];
         if (q) {
           const phone = normalizePhone(q);
-          const ref = q.toUpperCase();
+          const ref = code.toUpperCase();
           if (phone) {
             sql += ' AND (telefono = ? OR ref LIKE ? OR CAST(rowid AS TEXT) = ?)';
-            values.push(phone, '%' + ref + '%', q);
+            values.push(phone, '%' + ref + '%', code);
           } else {
             sql += ' AND (ref LIKE ? OR CAST(rowid AS TEXT) = ?)';
-            values.push('%' + ref + '%', q);
+            values.push('%' + ref + '%', code);
           }
         }
         sql += ' ORDER BY created_at DESC LIMIT 200';
