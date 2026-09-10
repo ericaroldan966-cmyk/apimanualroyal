@@ -1,4 +1,4 @@
--- Copia de la migración inicial. Wrangler usa migrations/0001_init.sql
+-- Snapshot only. Railway applies migrations/*.sql on every boot; do not exec this file against an existing DB.
 CREATE TABLE IF NOT EXISTS leads (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   ref TEXT NOT NULL UNIQUE,

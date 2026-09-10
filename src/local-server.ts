@@ -4,6 +4,7 @@ import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
+import { MIGRATIONS_DIR, runMigrations } from './migrate.ts';
 import {
   asText,
   attributionFromBody,
@@ -53,66 +54,20 @@ const ENV = {
 const dataDir = process.env.RAILWAY_VOLUME_MOUNT_PATH || process.env.DATA_DIR || path.join(API_ROOT, 'data');
 if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
 const dbPath = path.join(dataDir, 'local.db');
-console.log('[API] boot', HOST + ':' + PORT, dbPath);
-const db = new DatabaseSync(dbPath);
-console.log('[API] sqlite open');
-db.exec('PRAGMA journal_mode=WAL;');
-db.exec('PRAGMA busy_timeout=5000;');
-db.exec('PRAGMA synchronous=NORMAL;');
-db.exec(fs.readFileSync(path.join(API_ROOT, 'schema.sql'), 'utf8'));
+let db: DatabaseSync;
+let dbReady = false;
+let dbError = '';
 
-function tableColumns(name: string): string[] {
-  return (db.prepare('PRAGMA table_info(' + name + ')').all() as Array<{ name: string }>).map((row) => row.name);
-}
-
-for (const column of ['client_ip', 'user_agent', 'tenant']) {
-  try {
-    db.exec(
-      column === 'tenant'
-        ? "ALTER TABLE leads ADD COLUMN tenant TEXT NOT NULL DEFAULT 'royal'"
-        : 'ALTER TABLE leads ADD COLUMN ' + column + ' TEXT',
-    );
-  } catch {
-    /* already exists */
-  }
-}
-db.exec('CREATE INDEX IF NOT EXISTS idx_leads_tenant ON leads(tenant)');
-
-function tableExists(name: string): boolean {
-  return Boolean(
-    db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name),
-  );
-}
-
-if (tableExists('leads_v2')) {
-  if (!tableExists('leads')) {
-    db.exec('ALTER TABLE leads_v2 RENAME TO leads');
-  } else {
-    db.exec('DROP TABLE leads_v2');
-  }
-}
-
-try {
-  db.exec('ALTER TABLE leads ADD COLUMN ad INTEGER');
-} catch {
-  /* already exists */
-}
-
-if (tableColumns('ad_spend').length && !tableColumns('ad_spend').includes('tenant')) {
-  db.exec(`
-    CREATE TABLE ad_spend_mt (
-      tenant TEXT NOT NULL DEFAULT 'royal',
-      day TEXT NOT NULL,
-      usd REAL NOT NULL,
-      fx REAL NOT NULL DEFAULT 0,
-      updated_at TEXT NOT NULL,
-      PRIMARY KEY (tenant, day)
-    )
-  `);
-  db.exec("INSERT INTO ad_spend_mt (tenant, day, usd, fx, updated_at) SELECT 'royal', day, usd, fx, updated_at FROM ad_spend");
-  db.exec('DROP TABLE ad_spend');
-  db.exec('ALTER TABLE ad_spend_mt RENAME TO ad_spend');
-  db.exec('CREATE INDEX IF NOT EXISTS idx_ad_spend_day ON ad_spend(day)');
+function openDatabase(): void {
+  console.log('[API] opening sqlite', dbPath);
+  db = new DatabaseSync(dbPath);
+  db.exec('PRAGMA busy_timeout=5000;');
+  db.exec('PRAGMA journal_mode=WAL;');
+  db.exec('PRAGMA synchronous=NORMAL;');
+  runMigrations(db, MIGRATIONS_DIR);
+  dbReady = true;
+  dbError = '';
+  console.log('[API] db ready');
 }
 
 function tenantOf(req: http.IncomingMessage, url: URL, body?: Record<string, unknown>): TenantConfig {
@@ -131,7 +86,7 @@ function refLog(tenant: TenantId): string {
   return '[' + tenant.toUpperCase() + '][REF]';
 }
 
-console.log('[API]', 'storage', dbPath, process.env.RAILWAY_VOLUME_MOUNT_PATH ? 'persistent-volume' : 'local-data-dir');
+console.log('[API] boot', HOST + ':' + PORT);
 
 function loadDotEnv(filePath: string): void {
   if (!fs.existsSync(filePath)) return;
@@ -331,23 +286,28 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  if (req.method === 'GET' && url.pathname === '/api/health') {
+    const royal = tenantConfig('royal', process.env);
+    const kova = tenantConfig('kova', process.env);
+    send(res, dbError ? 503 : 200, {
+      ok: !dbError,
+      db: dbReady,
+      error: dbError || undefined,
+      tenants: {
+        royal: { pixel_id: royal.meta.PIXEL_ID, token_configured: Boolean(royal.meta.META_ACCESS_TOKEN) },
+        kova: { pixel_id: kova.meta.PIXEL_ID, token_configured: Boolean(kova.meta.META_ACCESS_TOKEN) },
+      },
+      send_key_configured: Boolean(ENV.PURCHASE_SEND_KEY),
+    }, origin);
+    return;
+  }
+
+  if (!dbReady) {
+    send(res, 503, { error: 'Iniciando.' }, origin);
+    return;
+  }
+
   try {
-    if (req.method === 'GET' && url.pathname === '/api/health') {
-      const royal = tenantConfig('royal', process.env);
-      const kova = tenantConfig('kova', process.env);
-      const fantastico = tenantConfig('fantastico', process.env);
-      send(res, 200, {
-        ok: true,
-        tenants: {
-          royal: { pixel_id: royal.meta.PIXEL_ID, token_configured: Boolean(royal.meta.META_ACCESS_TOKEN) },
-          kova: { pixel_id: kova.meta.PIXEL_ID, token_configured: Boolean(kova.meta.META_ACCESS_TOKEN) },
-          fantastico: { pixel_id: fantastico.meta.PIXEL_ID, token_configured: Boolean(fantastico.meta.META_ACCESS_TOKEN) },
-        },
-        send_key_configured: Boolean(ENV.PURCHASE_SEND_KEY),
-        db: true,
-      }, origin);
-      return;
-    }
 
     if (req.method === 'POST' && url.pathname === '/api/visit') {
       const body = await readBody(req);
@@ -695,15 +655,19 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, HOST, () => {
+  console.log('[API] http://' + HOST + ':' + PORT);
+  console.log('[API] db ' + dbPath, process.env.RAILWAY_VOLUME_MOUNT_PATH ? 'persistent-volume' : 'local-data-dir');
   const royal = tenantConfig('royal', process.env);
   const kova = tenantConfig('kova', process.env);
-  const fantastico = tenantConfig('fantastico', process.env);
-  console.log('[API] http://' + HOST + ':' + PORT);
-  console.log('[API] db ' + path.join(dataDir, 'local.db'));
   if (!ENV.PURCHASE_SEND_KEY) console.log('[API] Falta PURCHASE_SEND_KEY');
-  if (!royal.meta.PIXEL_ID) console.log('[META][ROYAL] Falta PIXEL_ID');
   if (!royal.meta.META_ACCESS_TOKEN) console.log('[API][ROYAL] META_ACCESS_TOKEN pendiente');
   if (!kova.meta.META_ACCESS_TOKEN) console.log('[API][KOVA] KOVA_META_ACCESS_TOKEN pendiente');
-  if (!fantastico.meta.PIXEL_ID) console.log('[META][FANTASTICO] FANTASTICO_PIXEL_ID pendiente');
-  if (!fantastico.meta.META_ACCESS_TOKEN) console.log('[API][FANTASTICO] FANTASTICO_META_ACCESS_TOKEN pendiente');
+  setImmediate(() => {
+    try {
+      openDatabase();
+    } catch (error) {
+      dbError = error instanceof Error ? error.message : String(error);
+      console.error('[API] db init failed', error);
+    }
+  });
 });

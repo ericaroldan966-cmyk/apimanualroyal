@@ -39,4 +39,8 @@ Fantastico:
 - `FANTASTICO_META_ACCESS_TOKEN_2`
 - `FANTASTICO_LANDING_URL` (URL de Vercel de esa landing)
 
-Volume en `/data`. Las landings y paneles usan `VITE_API_URL=https://apimanualroyal-production.up.railway.app` (sin barra al final).
+Volume en `/data`. En cada deploy el API aplica `migrations/*.sql` pendientes sobre ese archivo. Las landings y paneles usan `VITE_API_URL=https://apimanualroyal-production.up.railway.app` (sin barra al final).
+
+## Schema
+
+Cambios de tablas van en un archivo nuevo `migrations/0007_lo_que_sea.sql`. No edites una migración vieja. No corras `schema.sql` contra la base de Railway.
