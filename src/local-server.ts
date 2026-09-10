@@ -23,7 +23,9 @@ import {
   firstForwardedIp,
   storedOrRequest,
   pickSearchRef,
+  publicCode,
   publicLead,
+  isPersonId,
   resolveTenantId,
   sendMetaEvent,
   tenantConfig,
@@ -72,6 +74,80 @@ for (const column of ['client_ip', 'user_agent', 'tenant']) {
   }
 }
 db.exec('CREATE INDEX IF NOT EXISTS idx_leads_tenant ON leads(tenant)');
+
+function leadColInfo(): Array<{ name: string; pk: number }> {
+  return db.prepare('PRAGMA table_info(leads)').all() as Array<{ name: string; pk: number }>;
+}
+
+function needsPersonRebuild(): boolean {
+  const id = leadColInfo().find((column) => column.name === 'id');
+  return !id || Number(id.pk) !== 1;
+}
+
+if (needsPersonRebuild()) {
+  const cols = tableColumns('leads');
+  const has = (name: string) => cols.includes(name);
+  db.exec(`
+    CREATE TABLE leads_v2 (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ref TEXT NOT NULL UNIQUE,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'VISIT',
+      fbclid TEXT, fbp TEXT, fbc TEXT,
+      utm_source TEXT, utm_medium TEXT, utm_campaign TEXT, utm_content TEXT, utm_term TEXT,
+      campaign_id TEXT, adset_id TEXT, ad_id TEXT,
+      campaign_name TEXT, adset_name TEXT, ad_name TEXT,
+      landing_url TEXT, referrer TEXT, telefono TEXT,
+      client_ip TEXT, user_agent TEXT,
+      tenant TEXT NOT NULL DEFAULT 'royal',
+      ad INTEGER,
+      lead_enviado INTEGER NOT NULL DEFAULT 0,
+      lead_event_id TEXT, lead_sent_at TEXT, lead_events_received INTEGER, lead_meta_error TEXT,
+      purchase_enviado INTEGER NOT NULL DEFAULT 0,
+      purchase_event_id TEXT, monto_purchase REAL, fecha_purchase TEXT,
+      purchase_events_received INTEGER, purchase_meta_error TEXT
+    )
+  `);
+  db.exec(`
+    INSERT INTO leads_v2 (
+      ref, created_at, updated_at, status,
+      fbclid, fbp, fbc, utm_source, utm_medium, utm_campaign, utm_content, utm_term,
+      campaign_id, adset_id, ad_id, campaign_name, adset_name, ad_name,
+      landing_url, referrer, telefono, client_ip, user_agent, tenant, ad,
+      lead_enviado, lead_event_id, lead_sent_at, lead_events_received, lead_meta_error,
+      purchase_enviado, purchase_event_id, monto_purchase, fecha_purchase,
+      purchase_events_received, purchase_meta_error
+    )
+    SELECT
+      ref, created_at, updated_at, status,
+      fbclid, fbp, fbc, utm_source, utm_medium, utm_campaign, utm_content, utm_term,
+      campaign_id, adset_id, ad_id, campaign_name, adset_name, ad_name,
+      landing_url, referrer, telefono,
+      ${has('client_ip') ? 'client_ip' : 'NULL'},
+      ${has('user_agent') ? 'user_agent' : 'NULL'},
+      ${has('tenant') ? 'tenant' : "'royal'"},
+      ${has('ad') ? 'ad' : 'NULL'},
+      lead_enviado, lead_event_id, lead_sent_at, lead_events_received, lead_meta_error,
+      purchase_enviado, purchase_event_id, monto_purchase, fecha_purchase,
+      purchase_events_received, purchase_meta_error
+    FROM leads
+    ORDER BY created_at ASC, ref ASC
+  `);
+  db.exec('DROP TABLE leads');
+  db.exec('ALTER TABLE leads_v2 RENAME TO leads');
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_leads_telefono ON leads(telefono);
+    CREATE INDEX IF NOT EXISTS idx_leads_created ON leads(created_at);
+    CREATE INDEX IF NOT EXISTS idx_leads_ad_id ON leads(ad_id);
+    CREATE INDEX IF NOT EXISTS idx_leads_campaign_id ON leads(campaign_id);
+    CREATE INDEX IF NOT EXISTS idx_leads_tenant ON leads(tenant);
+  `);
+  console.log('[API] leads rebuilt with numeric person id');
+} else if (!tableColumns('leads').includes('ad')) {
+  db.exec('ALTER TABLE leads ADD COLUMN ad INTEGER');
+}
+
 if (tableColumns('ad_spend').length && !tableColumns('ad_spend').includes('tenant')) {
   db.exec(`
     CREATE TABLE ad_spend_mt (
@@ -152,14 +228,6 @@ function readBody(req: http.IncomingMessage): Promise<Record<string, unknown>> {
   });
 }
 
-function makeRef(): string {
-  const bytes = randomBytes(6);
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-  let out = '';
-  for (let i = 0; i < 6; i++) out += chars[bytes[i] % chars.length];
-  return 'REF-' + out;
-}
-
 function makeToken(): string {
   return randomBytes(24).toString('hex');
 }
@@ -170,56 +238,71 @@ function sha256(value: unknown): string | null {
   return createHash('sha256').update(normalized).digest('hex');
 }
 
-function getLead(ref: string): LeadRow | null {
+function getLeadById(id: number): LeadRow | null {
+  return (db.prepare('SELECT * FROM leads WHERE id = ?').get(id) as LeadRow | undefined) || null;
+}
+
+function getLeadByRef(ref: string): LeadRow | null {
   return (db.prepare('SELECT * FROM leads WHERE ref = ?').get(ref) as LeadRow | undefined) || null;
 }
 
-function getLeadForTenant(ref: string, tenant: TenantId): LeadRow | null {
-  const row = getLead(ref);
-  if (!row || leadTenant(row) !== tenant) return null;
+function findLead(code: string, tenant?: TenantId): LeadRow | null {
+  const raw = String(code || '').trim();
+  if (!raw) return null;
+  let row: LeadRow | null = null;
+  if (isPersonId(raw)) row = getLeadById(Number(raw));
+  if (!row) row = getLeadByRef(raw);
+  if (!row && isPersonId(raw)) row = getLeadByRef(raw);
+  if (!row) return null;
+  if (tenant && leadTenant(row) !== tenant) return null;
   return row;
 }
 
-function insertLead(ref: string, attr: Attribution, status: string, tenant: TenantId): LeadRow {
+function insertLead(attr: Attribution, status: string, tenant: TenantId): LeadRow {
   const created = nowIso();
-  db.prepare(`
+  const temp = 'TMP-' + randomBytes(8).toString('hex');
+  const result = db.prepare(`
     INSERT INTO leads (
-      ref, created_at, updated_at, status, tenant,
+      ref, created_at, updated_at, status, tenant, ad,
       fbclid, fbp, fbc, utm_source, utm_medium, utm_campaign, utm_content, utm_term,
       campaign_id, adset_id, ad_id, campaign_name, adset_name, ad_name,
       landing_url, referrer, telefono
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
-    ref, created, created, status, tenant,
+    temp, created, created, status, tenant, attr.ad > 0 ? attr.ad : null,
     attr.fbclid, attr.fbp, attr.fbc, attr.utm_source, attr.utm_medium, attr.utm_campaign, attr.utm_content, attr.utm_term,
     attr.campaign_id, attr.adset_id, attr.ad_id, attr.campaign_name, attr.adset_name, attr.ad_name,
     attr.landing_url, attr.referrer, attr.telefono,
   );
-  const row = getLead(ref);
+  const id = Number(result.lastInsertRowid);
+  db.prepare('UPDATE leads SET ref = ? WHERE id = ?').run(String(id), id);
+  const row = getLeadById(id);
   if (!row) throw new Error('No se pudo crear el lead.');
   return row;
 }
 
-function updateAttribution(ref: string, attr: Attribution): LeadRow {
+function updateAttribution(lead: LeadRow, attr: Attribution): LeadRow {
   db.prepare(`
     UPDATE leads SET
       updated_at = ?,
+      ad = ?,
       fbclid = ?, fbp = ?, fbc = ?,
       utm_source = ?, utm_medium = ?, utm_campaign = ?, utm_content = ?, utm_term = ?,
       campaign_id = ?, adset_id = ?, ad_id = ?,
       campaign_name = ?, adset_name = ?, ad_name = ?,
       landing_url = ?, referrer = ?, telefono = ?
-    WHERE ref = ?
+    WHERE id = ?
   `).run(
     nowIso(),
+    attr.ad > 0 ? attr.ad : (Number(lead.ad) > 0 ? Number(lead.ad) : null),
     attr.fbclid, attr.fbp, attr.fbc,
     attr.utm_source, attr.utm_medium, attr.utm_campaign, attr.utm_content, attr.utm_term,
     attr.campaign_id, attr.adset_id, attr.ad_id,
     attr.campaign_name, attr.adset_name, attr.ad_name,
     attr.landing_url, attr.referrer, attr.telefono,
-    ref,
+    lead.id,
   );
-  const row = getLead(ref);
+  const row = getLeadById(Number(lead.id));
   if (!row) throw new Error('No se pudo actualizar el lead.');
   return row;
 }
@@ -233,15 +316,15 @@ function requestVisitorIp(req: http.IncomingMessage): string {
   );
 }
 
-function persistVisitorContext(ref: string, ip: string, userAgent: string): LeadRow {
+function persistVisitorContext(lead: LeadRow, ip: string, userAgent: string): LeadRow {
   db.prepare(`
     UPDATE leads SET
       client_ip = CASE WHEN client_ip IS NULL OR client_ip = '' THEN ? ELSE client_ip END,
       user_agent = CASE WHEN user_agent IS NULL OR user_agent = '' THEN ? ELSE user_agent END,
       updated_at = ?
-    WHERE ref = ?
-  `).run(ip, userAgent, nowIso(), ref);
-  const row = getLead(ref);
+    WHERE id = ?
+  `).run(ip, userAgent, nowIso(), lead.id);
+  const row = getLeadById(Number(lead.id));
   if (!row) throw new Error('No se pudo guardar el contexto del visitante.');
   return row;
 }
@@ -249,24 +332,16 @@ function persistVisitorContext(ref: string, ip: string, userAgent: string): Lead
 function upsertVisit(requestedRef: unknown, incoming: Attribution, tenant: TenantId): LeadRow {
   const requested = pickSearchRef(String(requestedRef || ''));
   if (requested) {
-    const existing = getLead(requested);
-    if (existing && leadTenant(existing) === tenant) {
-      const updated = updateAttribution(requested, mergeAttribution(existing, incoming));
-      console.log(refLog(tenant), 'persisted', updated.ref);
+    const existing = findLead(requested, tenant);
+    if (existing) {
+      const updated = updateAttribution(existing, mergeAttribution(existing, incoming));
+      console.log(refLog(tenant), 'persisted', publicCode(updated));
       return updated;
     }
   }
-  for (let i = 0; i < 8; i++) {
-    const next = makeRef();
-    if (!getLead(next)) {
-      console.log(refLog(tenant), 'created', next);
-      const row = insertLead(next, incoming, 'VISIT', tenant);
-      if (!getLead(next)) throw new Error('No se pudo persistir el REF.');
-      console.log(refLog(tenant), 'persisted', next);
-      return row;
-    }
-  }
-  throw new Error('No se pudo generar REF.');
+  const row = insertLead(incoming, 'VISIT', tenant);
+  console.log(refLog(tenant), 'created', publicCode(row));
+  return row;
 }
 
 function buildUserData(lead: LeadRow, extras: { client_ip_address?: string; client_user_agent?: string }): Record<string, unknown> {
@@ -275,7 +350,7 @@ function buildUserData(lead: LeadRow, extras: { client_ip_address?: string; clie
   if (lead.fbc) userData.fbc = lead.fbc;
   const phoneHash = sha256(lead.telefono);
   if (phoneHash) userData.ph = [phoneHash];
-  const externalId = sha256(lead.ref);
+  const externalId = sha256(publicCode(lead));
   if (externalId) userData.external_id = [externalId];
   if (extras.client_ip_address) userData.client_ip_address = extras.client_ip_address;
   if (extras.client_user_agent) userData.client_user_agent = extras.client_user_agent;
@@ -317,15 +392,17 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       const tenant = tenantOf(req, url, body);
+      const incoming = attributionFromBody({ ...body, a: body.a ?? body.ad ?? url.searchParams.get('a') });
       const lead = persistVisitorContext(
-        upsertVisit(body.ref, attributionFromBody(body), tenant.id).ref,
+        upsertVisit(body.ref, incoming, tenant.id),
         requestVisitorIp(req),
         asText(req.headers['user-agent'], 400),
       );
-      console.log(refLog(tenant.id), 'returned to landing', lead.ref);
+      const code = publicCode(lead);
+      console.log(refLog(tenant.id), 'returned to landing', code);
       void sendMetaEvent(tenant.meta, {
         event_name: 'PageView',
-        event_id: pageViewEventId(lead.ref),
+        event_id: pageViewEventId(code),
         event_source_url: lead.landing_url || tenant.landingUrl,
         user_data: buildUserData(lead, {
           client_ip_address: requestVisitorIp(req),
@@ -334,7 +411,7 @@ const server = http.createServer(async (req, res) => {
         custom_data: {},
       });
       console.log('[visit] Lead guardado ' + tenant.id);
-      send(res, 200, { ok: true, ref: lead.ref, status: lead.status, tenant: tenant.id }, origin);
+      send(res, 200, { ok: true, ref: code, id: lead.id, a: Number(lead.ad) || 0, status: lead.status, tenant: tenant.id }, origin);
       return;
     }
 
@@ -347,22 +424,24 @@ const server = http.createServer(async (req, res) => {
       const tenant = tenantOf(req, url, body);
       const ip = requestVisitorIp(req);
       const userAgent = asText(req.headers['user-agent'], 400);
-      const lead = persistVisitorContext(upsertVisit(body.ref, attributionFromBody(body), tenant.id).ref, ip, userAgent);
-      const eventId = asText(body.event_id, 80) || ('lead_' + lead.ref);
+      const incoming = attributionFromBody({ ...body, a: body.a ?? body.ad ?? url.searchParams.get('a') });
+      const lead = persistVisitorContext(upsertVisit(body.ref, incoming, tenant.id), ip, userAgent);
+      const code = publicCode(lead);
+      const eventId = asText(body.event_id, 80) || ('lead_' + code);
       const visitorData = buildUserData(lead, {
         client_ip_address: ip,
         client_user_agent: userAgent,
       });
       void sendMetaEvent(tenant.meta, {
         event_name: 'InitiateCheckout',
-        event_id: checkoutEventId(lead.ref),
+        event_id: checkoutEventId(code),
         event_source_url: lead.landing_url || tenant.landingUrl,
         user_data: visitorData,
         custom_data: {},
       });
       if (lead.lead_enviado) {
         console.log('[lead] Lead omitido, ya enviado');
-        send(res, 200, { ok: true, ref: lead.ref, event_id: lead.lead_event_id || eventId, already_sent: true, tenant: tenant.id }, origin);
+        send(res, 200, { ok: true, ref: code, id: lead.id, a: Number(lead.ad) || 0, event_id: lead.lead_event_id || eventId, already_sent: true, tenant: tenant.id }, origin);
         return;
       }
       const meta = await sendMetaEvent(tenant.meta, {
@@ -394,7 +473,9 @@ const server = http.createServer(async (req, res) => {
       console.log('[lead] Lead pixel1_ok=' + String(meta.pixel1_ok) + ' pixel2_ok=' + String(meta.pixel2_ok) + (meta.ok ? '' : ' :: ' + metaFailureMessage(meta)));
       send(res, 200, {
         ok: true,
-        ref: lead.ref,
+        ref: code,
+        id: lead.id,
+        a: Number(lead.ad) || 0,
         event_id: eventId,
         events_received: meta.events_received,
         tenant: tenant.id,
@@ -425,21 +506,21 @@ const server = http.createServer(async (req, res) => {
       const tenant = tenantOf(req, url);
       const q = asText(url.searchParams.get('q'), 300);
       if (!q) {
-        send(res, 400, { error: 'Escribí un REF o un teléfono.' }, origin);
+        send(res, 400, { error: 'Escribí el número de persona o un teléfono.' }, origin);
         return;
       }
       let row = null;
       const searchRef = pickSearchRef(q);
       console.log(refLog(tenant.id), 'search requested', searchRef || q);
-      if (searchRef) row = getLeadForTenant(searchRef, tenant.id);
+      if (searchRef) row = findLead(searchRef, tenant.id);
       const phone = normalizePhone(q);
       if (!row && phone) {
         row = db.prepare('SELECT * FROM leads WHERE telefono = ? AND tenant = ? ORDER BY created_at DESC LIMIT 1').get(phone, tenant.id) as LeadRow | undefined || null;
       }
-      if (!row) row = getLeadForTenant(q.toUpperCase(), tenant.id);
+      if (!row) row = findLead(q, tenant.id);
       if (!row) {
         console.log(refLog(tenant.id), 'not found', searchRef || q);
-        send(res, 404, { error: 'REF no encontrado' }, origin);
+        send(res, 404, { error: 'Código no encontrado' }, origin);
         return;
       }
       console.log(refLog(tenant.id), 'found', row.ref);
@@ -454,13 +535,13 @@ const server = http.createServer(async (req, res) => {
         send(res, 503, { error: 'Falta META_ACCESS_TOKEN o META_ACCESS_TOKEN_2.' }, origin);
         return;
       }
-      const ref = pickSearchRef(asText(body.ref, 300)) || asText(body.ref, 20).toUpperCase();
+      const ref = pickSearchRef(asText(body.ref, 300)) || asText(body.ref, 20);
       const monto = Number(body.monto);
       const force = Boolean(body.force);
-      const lead = getLeadForTenant(ref, tenant.id);
+      const lead = findLead(ref, tenant.id);
       if (!lead) {
-        console.log('[purchase] REF no encontrado');
-        send(res, 404, { error: 'REF no encontrado' }, origin);
+        console.log('[purchase] Código no encontrado');
+        send(res, 404, { error: 'Código no encontrado' }, origin);
         return;
       }
       if (!(monto > 0)) {
@@ -468,12 +549,13 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       const alreadyHadPurchase = Boolean(lead.purchase_enviado);
-      const eventId = 'purchase_' + lead.ref + '_' + Date.now().toString(36);
+      const code = publicCode(lead);
+      const eventId = 'purchase_' + code + '_' + Date.now().toString(36);
       const purchaseUserData = buildUserData(lead, {
         client_ip_address: storedOrRequest(lead.client_ip, requestVisitorIp(req)),
         client_user_agent: storedOrRequest(lead.user_agent, asText(req.headers['user-agent'], 400)),
       });
-      const purchaseCustom = { currency: 'ARS', value: Number(monto.toFixed(2)), order_id: lead.ref };
+      const purchaseCustom = { currency: 'ARS', value: Number(monto.toFixed(2)), order_id: code };
       const meta = await sendMetaEvent(tenant.meta, {
         event_name: 'Purchase',
         event_id: eventId,
@@ -492,7 +574,7 @@ const server = http.createServer(async (req, res) => {
           events_received, meta_status, meta_error, forced
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
-        lead.ref, monto, eventId, created,
+        code, monto, eventId, created,
         lead.campaign_id, lead.campaign_name, lead.adset_id, lead.adset_name, lead.ad_id, lead.ad_name,
         meta.events_received == null ? null : meta.events_received,
         metaStatus,
@@ -520,13 +602,15 @@ const server = http.createServer(async (req, res) => {
       send(res, 200, {
         ok: meta.ok,
         saved: true,
-        ref: lead.ref,
+        ref: code,
+        id: lead.id,
+        a: Number(lead.ad) || 0,
         monto,
         event_id: eventId,
         fecha_purchase: created,
         events_received: meta.events_received,
         ...metaPixelPayload(meta),
-        lead: publicLead(getLead(lead.ref)),
+        lead: publicLead(getLeadById(Number(lead.id))),
       }, origin);
       return;
     }
@@ -616,9 +700,9 @@ const server = http.createServer(async (req, res) => {
       if (q) {
         const phone = normalizePhone(q);
         if (phone) {
-          rows = db.prepare('SELECT * FROM leads WHERE tenant = ? AND (telefono = ? OR ref LIKE ?) ORDER BY created_at DESC LIMIT 200').all(tenant.id, phone, '%' + q.toUpperCase() + '%') as LeadRow[];
+          rows = db.prepare('SELECT * FROM leads WHERE tenant = ? AND (telefono = ? OR ref LIKE ? OR CAST(id AS TEXT) = ?) ORDER BY created_at DESC LIMIT 200').all(tenant.id, phone, '%' + q.toUpperCase() + '%', q) as LeadRow[];
         } else {
-          rows = db.prepare('SELECT * FROM leads WHERE tenant = ? AND ref LIKE ? ORDER BY created_at DESC LIMIT 200').all(tenant.id, '%' + q.toUpperCase() + '%') as LeadRow[];
+          rows = db.prepare('SELECT * FROM leads WHERE tenant = ? AND (ref LIKE ? OR CAST(id AS TEXT) = ?) ORDER BY created_at DESC LIMIT 200').all(tenant.id, '%' + q.toUpperCase() + '%', q) as LeadRow[];
         }
       } else {
         rows = db.prepare('SELECT * FROM leads WHERE tenant = ? ORDER BY created_at DESC LIMIT 200').all(tenant.id) as LeadRow[];
@@ -630,9 +714,9 @@ const server = http.createServer(async (req, res) => {
     const leadMatch = url.pathname.match(/^\/api\/lead\/([^/]+)$/);
     if (req.method === 'GET' && leadMatch) {
       const tenant = tenantOf(req, url);
-      const row = getLeadForTenant(decodeURIComponent(leadMatch[1]).toUpperCase(), tenant.id);
+      const row = findLead(decodeURIComponent(leadMatch[1]), tenant.id);
       if (!row) {
-        send(res, 404, { error: 'REF no encontrado' }, origin);
+        send(res, 404, { error: 'Código no encontrado' }, origin);
         return;
       }
       send(res, 200, { ok: true, lead: publicLead(row) }, origin);

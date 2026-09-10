@@ -1,5 +1,4 @@
--- Copia de la migración inicial. Wrangler usa migrations/0001_init.sql
-CREATE TABLE IF NOT EXISTS leads (
+CREATE TABLE IF NOT EXISTS leads_v2 (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   ref TEXT NOT NULL UNIQUE,
   created_at TEXT NOT NULL,
@@ -39,45 +38,32 @@ CREATE TABLE IF NOT EXISTS leads (
   purchase_meta_error TEXT
 );
 
-CREATE TABLE IF NOT EXISTS purchases (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  ref TEXT NOT NULL,
-  monto REAL NOT NULL,
-  event_id TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  campaign_id TEXT,
-  campaign_name TEXT,
-  adset_id TEXT,
-  adset_name TEXT,
-  ad_id TEXT,
-  ad_name TEXT,
-  events_received INTEGER,
-  meta_status TEXT,
-  meta_error TEXT,
-  forced INTEGER NOT NULL DEFAULT 0
-);
+INSERT INTO leads_v2 (
+  ref, created_at, updated_at, status,
+  fbclid, fbp, fbc, utm_source, utm_medium, utm_campaign, utm_content, utm_term,
+  campaign_id, adset_id, ad_id, campaign_name, adset_name, ad_name,
+  landing_url, referrer, telefono, client_ip, user_agent, tenant, ad,
+  lead_enviado, lead_event_id, lead_sent_at, lead_events_received, lead_meta_error,
+  purchase_enviado, purchase_event_id, monto_purchase, fecha_purchase,
+  purchase_events_received, purchase_meta_error
+)
+SELECT
+  ref, created_at, updated_at, status,
+  fbclid, fbp, fbc, utm_source, utm_medium, utm_campaign, utm_content, utm_term,
+  campaign_id, adset_id, ad_id, campaign_name, adset_name, ad_name,
+  landing_url, referrer, telefono, client_ip, user_agent,
+  COALESCE(tenant, 'royal'), NULL,
+  lead_enviado, lead_event_id, lead_sent_at, lead_events_received, lead_meta_error,
+  purchase_enviado, purchase_event_id, monto_purchase, fecha_purchase,
+  purchase_events_received, purchase_meta_error
+FROM leads
+ORDER BY created_at ASC, ref ASC;
 
-CREATE TABLE IF NOT EXISTS sessions (
-  token TEXT PRIMARY KEY,
-  created_at TEXT NOT NULL,
-  expires_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS ad_spend (
-  tenant TEXT NOT NULL DEFAULT 'royal',
-  day TEXT NOT NULL,
-  usd REAL NOT NULL,
-  fx REAL NOT NULL DEFAULT 0,
-  updated_at TEXT NOT NULL,
-  PRIMARY KEY (tenant, day)
-);
+DROP TABLE leads;
+ALTER TABLE leads_v2 RENAME TO leads;
 
 CREATE INDEX IF NOT EXISTS idx_leads_telefono ON leads(telefono);
 CREATE INDEX IF NOT EXISTS idx_leads_created ON leads(created_at);
 CREATE INDEX IF NOT EXISTS idx_leads_ad_id ON leads(ad_id);
 CREATE INDEX IF NOT EXISTS idx_leads_campaign_id ON leads(campaign_id);
 CREATE INDEX IF NOT EXISTS idx_leads_tenant ON leads(tenant);
-CREATE INDEX IF NOT EXISTS idx_purchases_ref ON purchases(ref);
-CREATE INDEX IF NOT EXISTS idx_purchases_created ON purchases(created_at);
-CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
-CREATE INDEX IF NOT EXISTS idx_ad_spend_day ON ad_spend(day);

@@ -4,18 +4,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
-import { isValidRef, pickSearchRef, REF_CHARS } from '../src/shared.ts';
+import { isValidRef, pickSearchRef, publicCode } from '../src/shared.ts';
 
 const failures: string[] = [];
 function assert(condition: unknown, message: string): void {
   if (!condition) failures.push(message);
-}
-
-function makeRef(): string {
-  const bytes = randomBytes(6);
-  let out = '';
-  for (let i = 0; i < 6; i++) out += REF_CHARS[bytes[i] % REF_CHARS.length];
-  return 'REF-' + out;
 }
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -26,76 +19,103 @@ const db = new DatabaseSync(dbPath);
 db.exec('PRAGMA journal_mode=WAL;');
 db.exec(schema);
 
-function getLead(ref: string): { ref: string } | null {
-  return (db.prepare('SELECT ref FROM leads WHERE ref = ?').get(ref) as { ref: string } | undefined) || null;
+function getLeadById(id: number): { id: number; ref: string; tenant: string } | null {
+  return (db.prepare('SELECT id, ref, tenant FROM leads WHERE id = ?').get(id) as { id: number; ref: string; tenant: string } | undefined) || null;
 }
 
-function insertLead(ref: string): { ref: string } {
+function getLeadByRef(ref: string): { id: number; ref: string; tenant: string } | null {
+  return (db.prepare('SELECT id, ref, tenant FROM leads WHERE ref = ?').get(ref) as { id: number; ref: string; tenant: string } | undefined) || null;
+}
+
+function findLead(code: string, tenant?: string) {
+  const raw = String(code || '').trim();
+  let row = /^\d{1,10}$/.test(raw) ? getLeadById(Number(raw)) : null;
+  if (!row) row = getLeadByRef(raw);
+  if (!row) return null;
+  if (tenant && row.tenant !== tenant) return null;
+  return row;
+}
+
+function insertLead(tenant = 'royal', ad: number | null = null) {
   const now = new Date().toISOString();
-  db.prepare(`
-    INSERT INTO leads (ref, created_at, updated_at, status)
-    VALUES (?, ?, ?, 'VISIT')
-  `).run(ref, now, now);
-  const row = getLead(ref);
+  const temp = 'TMP-' + randomBytes(8).toString('hex');
+  const result = db.prepare(`
+    INSERT INTO leads (ref, created_at, updated_at, status, tenant, ad)
+    VALUES (?, ?, ?, 'VISIT', ?, ?)
+  `).run(temp, now, now, tenant, ad);
+  const id = Number(result.lastInsertRowid);
+  db.prepare('UPDATE leads SET ref = ? WHERE id = ?').run(String(id), id);
+  const row = getLeadById(id);
   if (!row) throw new Error('insert failed');
   return row;
 }
 
-function upsertVisit(requestedRef: unknown): { ref: string } {
+function upsertVisit(requestedRef: unknown, tenant = 'royal', ad: number | null = null) {
   const requested = pickSearchRef(String(requestedRef || ''));
   if (requested) {
-    const existing = getLead(requested);
+    const existing = findLead(requested, tenant);
     if (existing) return existing;
   }
-  for (let i = 0; i < 8; i++) {
-    const next = makeRef();
-    if (!getLead(next)) return insertLead(next);
-  }
-  throw new Error('No se pudo generar REF.');
+  return insertLead(tenant, ad);
 }
 
 const first = upsertVisit('');
-assert(isValidRef(first.ref), 'TEST1 issued valid REF');
-assert(getLead(first.ref), 'TEST1 REF exists immediately');
+assert(isValidRef(first.ref), 'TEST1 issued valid numeric code');
+assert(first.ref === String(first.id), 'TEST1 public code is the id');
+assert(getLeadById(first.id), 'TEST1 id exists immediately');
 assert(pickSearchRef(first.ref) === first.ref, 'TEST1 search exact');
-assert(pickSearchRef(first.ref.toLowerCase()) === first.ref, 'TEST1 lowercase');
 assert(pickSearchRef(' ' + first.ref + ' ') === first.ref, 'TEST1 padded');
-assert(pickSearchRef(first.ref.slice(4)) === first.ref, 'TEST1 suffix only');
 
-const refs = new Set<string>();
-for (let i = 0; i < 20; i++) refs.add(upsertVisit('').ref);
-assert(refs.size === 20, 'TEST2 20 unique REFs');
-for (const ref of refs) assert(getLead(ref), 'TEST2 all 20 searchable');
+const second = upsertVisit('');
+assert(second.id === first.id + 1, 'TEST1 sequential ids');
+assert(second.ref !== first.ref, 'TEST1 two visits never share a number');
 
-assert(pickSearchRef('REF-A8K92P') === 'REF-A8K92P', 'TEST3 exact');
+const ids = new Set<number>();
+for (let i = 0; i < 20; i++) ids.add(upsertVisit('').id);
+assert(ids.size === 20, 'TEST2 20 unique ids');
+
+assert(pickSearchRef('REF-A8K92P') === 'REF-A8K92P', 'TEST3 exact legacy');
 assert(pickSearchRef('ref-a8k92p') === 'REF-A8K92P', 'TEST3 lower');
-assert(pickSearchRef(' REF-A8K92P ') === 'REF-A8K92P', 'TEST3 spaces');
-assert(pickSearchRef('Hola, quiero más información. REF-A8K92P') === 'REF-A8K92P', 'TEST3 pasted message');
+assert(pickSearchRef('Hola, quiero más información. REF-A8K92P') === 'REF-A8K92P', 'TEST3 pasted REF');
+assert(pickSearchRef('Hola, quiero más información. 47 quiero mi 100%!') === '47', 'TEST3 pasted number');
+assert(pickSearchRef('47') === '47', 'TEST3 person id');
+assert(pickSearchRef('123456') === '123456', 'TEST3 digits are not REF-');
 assert(pickSearchRef('A8K92P') === 'REF-A8K92P', 'TEST3 suffix');
 
-assert(!pickSearchRef(''), 'TEST4 empty is not a REF');
+assert(!pickSearchRef(''), 'TEST4 empty is not a code');
 const failedSave = null as { ref?: string } | null;
-assert(!(failedSave?.ref && isValidRef(failedSave.ref)), 'TEST4 failed save must not yield a REF');
+assert(!(failedSave?.ref && isValidRef(failedSave.ref)), 'TEST4 failed save must not yield a code');
 
 const once = upsertVisit('');
 const again = upsertVisit(once.ref);
-assert(once.ref === again.ref, 'TEST5 same action reuses REF');
-const counted = db.prepare('SELECT COUNT(*) AS n FROM leads WHERE ref = ?').get(once.ref) as { n: number };
+assert(once.id === again.id, 'TEST5 same action reuses id');
+const counted = db.prepare('SELECT COUNT(*) AS n FROM leads WHERE id = ?').get(once.id) as { n: number };
 assert(counted.n === 1, 'TEST5 one row');
+
+const royal = upsertVisit('', 'royal', 2);
+const kova = upsertVisit(String(royal.id), 'kova', 1);
+assert(kova.id !== royal.id, 'TEST6 tenants do not share a number');
+assert(!findLead(String(royal.id), 'kova'), 'TEST6 kova cannot see royal id');
+assert(royal.ref === String(royal.id), 'TEST6 royal public code');
+assert(publicCode(royal) === String(royal.id), 'TEST6 publicCode');
+
+const now = new Date().toISOString();
+db.prepare(`
+  INSERT INTO leads (ref, created_at, updated_at, status, tenant)
+  VALUES (?, ?, ?, 'VISIT', 'royal')
+`).run('REF-A8K92P', now, now);
+assert(findLead('REF-A8K92P', 'royal')?.ref === 'REF-A8K92P', 'TEST7 old REF still searchable');
 
 db.close();
 const reopened = new DatabaseSync(dbPath);
-const stillThere = reopened.prepare('SELECT ref FROM leads WHERE ref = ?').get(first.ref) as { ref: string } | undefined;
-assert(stillThere?.ref === first.ref, 'TEST6 survives reopen');
-const purchaseLookup = pickSearchRef('  ref-' + first.ref.slice(4).toLowerCase() + ' ');
-const purchaseRow = reopened.prepare('SELECT ref FROM leads WHERE ref = ?').get(purchaseLookup) as { ref: string } | undefined;
-assert(purchaseRow?.ref === first.ref, 'TEST7 purchase lookup uses same REF');
+const stillThere = reopened.prepare('SELECT id, ref FROM leads WHERE id = ?').get(first.id) as { id: number; ref: string } | undefined;
+assert(stillThere?.ref === first.ref, 'TEST8 survives reopen');
+
 reopened.close();
 fs.rmSync(dir, { recursive: true, force: true });
 
 if (failures.length) {
-  console.error('REF FLOW FAILED');
-  for (const item of failures) console.error(' -', item);
+  console.error(failures.join('\n'));
   process.exit(1);
 }
-console.log('REF FLOW OK', first.ref, 'plus', refs.size, 'unique');
+console.log('ref-flow ok');

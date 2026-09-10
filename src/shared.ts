@@ -25,9 +25,11 @@ export type Attribution = {
   landing_url: string;
   referrer: string;
   telefono: string;
+  ad: number;
 };
 
 export type LeadRow = Attribution & {
+  id?: number;
   ref: string;
   tenant?: string;
   created_at: string;
@@ -50,6 +52,8 @@ export type LeadRow = Attribution & {
 
 export type PublicLead = {
   ref: string;
+  id: number | null;
+  a: number;
   status: string;
   created_at: string;
   lead_sent_at: string | null;
@@ -219,10 +223,33 @@ export function normalizePhone(value: unknown): string {
   return digits;
 }
 
+export function publicCode(row: { id?: number | null; ref?: string } | null | undefined): string {
+  if (!row) return '';
+  if (row.id && Number(row.id) > 0) return String(row.id);
+  return String(row.ref || '');
+}
+
+export function parseAd(value: unknown): number {
+  const n = Number(value);
+  if (Number.isInteger(n) && n >= 1 && n <= 999999) return n;
+  return 0;
+}
+
+export function isPersonId(value: string): boolean {
+  return /^\d{1,10}$/.test(String(value || '').trim());
+}
+
+export function isLegacyRef(value: string): boolean {
+  return /^REF-[A-Z0-9]{6,12}$/.test(String(value || '').trim().toUpperCase());
+}
+
 export function publicLead(row: LeadRow | null): PublicLead | null {
   if (!row) return null;
+  const code = publicCode(row);
   return {
-    ref: row.ref,
+    ref: code,
+    id: row.id && row.id > 0 ? Number(row.id) : (isPersonId(row.ref) ? Number(row.ref) : null),
+    a: Number(row.ad) > 0 ? Number(row.ad) : 0,
     status: row.status,
     created_at: row.created_at,
     lead_sent_at: row.lead_sent_at,
@@ -265,6 +292,7 @@ export function attributionFromBody(body: Record<string, unknown>): Attribution 
     landing_url: asText(body.landing_url, 2000),
     referrer: asText(body.referrer, 1000),
     telefono: normalizePhone(body.telefono || body.phone),
+    ad: parseAd(body.a ?? body.ad),
   };
 }
 
@@ -287,6 +315,7 @@ export function mergeAttribution(row: LeadRow, incoming: Attribution): Attributi
     landing_url: fill(row.landing_url, incoming.landing_url),
     referrer: fill(row.referrer, incoming.referrer),
     telefono: fill(row.telefono, incoming.telefono),
+    ad: incoming.ad > 0 ? incoming.ad : (Number(row.ad) > 0 ? Number(row.ad) : 0),
   };
 }
 
@@ -295,23 +324,30 @@ export function normalizeRefQuery(q: string): string {
 }
 
 export function isValidRef(ref: string): boolean {
-  return /^REF-[A-Z0-9]{6,12}$/.test(ref);
+  const raw = String(ref || '').trim();
+  return isPersonId(raw) || isLegacyRef(raw);
 }
 
 export function pickSearchRef(q: string): string {
-  const raw = String(q || '').trim().toUpperCase();
-  const matches = raw.match(/REF[\s\-]*[A-Z0-9]{6,12}/g);
+  const raw = String(q || '').trim();
+  const upper = raw.toUpperCase();
+  const matches = upper.match(/REF[\s\-]*[A-Z0-9]{6,12}/g);
   if (matches && matches.length) {
     const last = matches[matches.length - 1].replace(/[^A-Z0-9]/g, '');
     const next = 'REF-' + last.slice(3);
-    if (isValidRef(next)) return next;
+    if (isLegacyRef(next)) return next;
   }
-  const compact = raw.replace(/[^A-Z0-9]/g, '');
+  if (isPersonId(raw)) return raw;
+  const fromMessage = raw.match(/(?:información\.\s*)(\d{1,10})(?:\s+quiero)/i) || raw.match(/\s(\d{1,10})\s+quiero/i);
+  if (fromMessage && isPersonId(fromMessage[1])) return fromMessage[1];
+  const numbers = raw.match(/\d{1,10}/g);
+  if (numbers && numbers.length === 1 && isPersonId(numbers[0])) return numbers[0];
+  const compact = upper.replace(/[^A-Z0-9]/g, '');
   if (compact.startsWith('REF') && compact.length >= 9 && compact.length <= 15) {
     const next = 'REF-' + compact.slice(3);
-    return isValidRef(next) ? next : '';
+    return isLegacyRef(next) ? next : '';
   }
-  if (/^[A-Z0-9]{6,12}$/.test(compact)) return 'REF-' + compact;
+  if (/^[A-Z0-9]{6,12}$/.test(compact) && /[A-Z]/.test(compact)) return 'REF-' + compact;
   return '';
 }
 
