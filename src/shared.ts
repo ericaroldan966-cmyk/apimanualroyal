@@ -229,9 +229,16 @@ export function publicCode(row: { id?: number | null; ref?: string } | null | un
   return String(row.ref || '');
 }
 
+function glueRefText(value: string): string {
+  return String(value || '')
+    .toUpperCase()
+    .replace(/[\u2011\u2060]/g, '-')
+    .replace(/[\s\u00A0]+/g, '');
+}
+
 export function unwrapDisplayCode(value: string): string {
   const raw = String(value || '').trim();
-  const visual = raw.toUpperCase().match(/^REF-(\d{1,10})$/);
+  const visual = glueRefText(raw).match(/^REF-?(\d{1,10})$/);
   if (visual) return visual[1];
   return raw;
 }
@@ -239,6 +246,12 @@ export function unwrapDisplayCode(value: string): string {
 export function displayCode(value: string): string {
   const raw = unwrapDisplayCode(value);
   if (isPersonId(raw)) return 'REF-' + raw;
+  return raw;
+}
+
+export function whatsappCode(value: string): string {
+  const raw = unwrapDisplayCode(value);
+  if (isPersonId(raw)) return 'REF-\u2060' + raw;
   return raw;
 }
 
@@ -343,8 +356,11 @@ export function isValidRef(ref: string): boolean {
 
 export function pickSearchRef(q: string): string {
   const raw = String(q || '').trim();
+  const glued = glueRefText(raw);
+  const gluedVisual = glued.match(/^REF-?(\d{1,10})$/);
+  if (gluedVisual && isPersonId(gluedVisual[1])) return gluedVisual[1];
   const upper = raw.toUpperCase();
-  const visualMatches = [...upper.matchAll(/REF[\s\-]*(\d{1,10})(?![A-Z0-9])/g)];
+  const visualMatches = [...upper.matchAll(/REF[\s\-\u2011\u2060]*(\d{1,10})(?![A-Z0-9])/g)];
   if (visualMatches.length) {
     const last = visualMatches[visualMatches.length - 1][1];
     if (isPersonId(last)) return last;

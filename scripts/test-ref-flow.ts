@@ -80,9 +80,12 @@ assert(pickSearchRef('Hola, quiero más información. REF-A8K92P') === 'REF-A8K9
 assert(pickSearchRef('Hola, quiero más información. 47 quiero mi 100%!') === '47', 'TEST3 pasted number');
 assert(pickSearchRef('Hola, quiero mas informacion. 47 quiero mi 100%!') === '47', 'TEST3 pasted number without accent');
 assert(pickSearchRef('REF-47') === '47', 'TEST3 visual REF is only a wrapper');
+assert(pickSearchRef('REF- 1536') === '1536', 'TEST3 space after hyphen');
+assert(pickSearchRef('REF-\n1536') === '1536', 'TEST3 line break after hyphen');
 assert(pickSearchRef('Hola, quiero más información. REF-47 quiero mi 100%!') === '47', 'TEST3 pasted visual REF');
 assert(displayCode('47') === 'REF-47', 'TEST3 WhatsApp shows REF-47');
 assert(isValidRef('REF-47'), 'TEST3 visual REF is valid');
+assert(isValidRef('REF- 1536'), 'TEST3 spaced visual REF is valid');
 assert(pickSearchRef('quiero mi 100%!') !== '100', 'TEST3 100 percent is not a person id');
 assert(pickSearchRef('47') === '47', 'TEST3 person id');
 assert(pickSearchRef('123456') === '123456', 'TEST3 digits are not REF-');
