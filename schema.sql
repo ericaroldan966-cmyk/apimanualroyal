@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS leads (
   telefono TEXT,
   client_ip TEXT,
   user_agent TEXT,
+  tenant TEXT NOT NULL DEFAULT 'royal',
   lead_enviado INTEGER NOT NULL DEFAULT 0,
   lead_event_id TEXT,
   lead_sent_at TEXT,
@@ -61,16 +62,19 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 
 CREATE TABLE IF NOT EXISTS ad_spend (
-  day TEXT PRIMARY KEY,
+  tenant TEXT NOT NULL DEFAULT 'royal',
+  day TEXT NOT NULL,
   usd REAL NOT NULL,
   fx REAL NOT NULL DEFAULT 0,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (tenant, day)
 );
 
 CREATE INDEX IF NOT EXISTS idx_leads_telefono ON leads(telefono);
 CREATE INDEX IF NOT EXISTS idx_leads_created ON leads(created_at);
 CREATE INDEX IF NOT EXISTS idx_leads_ad_id ON leads(ad_id);
 CREATE INDEX IF NOT EXISTS idx_leads_campaign_id ON leads(campaign_id);
+CREATE INDEX IF NOT EXISTS idx_leads_tenant ON leads(tenant);
 CREATE INDEX IF NOT EXISTS idx_purchases_ref ON purchases(ref);
 CREATE INDEX IF NOT EXISTS idx_purchases_created ON purchases(created_at);
 CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);

@@ -1,7 +1,4 @@
-import {
-  DEFAULT_LANDING_URL,
-  PIXEL_ID,
-  PIXEL_ID_2,
+﻿import {
   REF_CHARS,
   asText,
   attributionFromBody,
@@ -12,6 +9,7 @@ import {
   summarizeSpend,
   isYmd,
   isLocalOrigin,
+  leadTenant,
   mergeAttribution,
   normalizePhone,
   nowIso,
@@ -21,11 +19,16 @@ import {
   storedOrRequest,
   pickSearchRef,
   publicLead,
+  resolveTenantId,
   sendMetaEvent,
+  tenantConfig,
   metaFailureMessage,
   metaPixelPayload,
   type Attribution,
   type LeadRow,
+  type TenantConfig,
+  type TenantId,
+  type TenantEnvSource,
 } from './shared.ts';
 
 type Env = {
@@ -38,6 +41,16 @@ type Env = {
   PIXEL_ID_2?: string;
   LANDING_URL?: string;
   ALLOWED_ORIGIN?: string;
+  KOVA_PIXEL_ID?: string;
+  KOVA_PIXEL_ID_2?: string;
+  KOVA_META_ACCESS_TOKEN?: string;
+  KOVA_META_ACCESS_TOKEN_2?: string;
+  KOVA_LANDING_URL?: string;
+  FANTASTICO_PIXEL_ID?: string;
+  FANTASTICO_PIXEL_ID_2?: string;
+  FANTASTICO_META_ACCESS_TOKEN?: string;
+  FANTASTICO_META_ACCESS_TOKEN_2?: string;
+  FANTASTICO_LANDING_URL?: string;
 };
 
 const hits = new Map<string, number[]>();
@@ -112,25 +125,43 @@ async function persistVisitorContext(db: D1Database, ref: string, ip: string, us
   return row;
 }
 
-function landingUrl(env: Env): string {
-  return env.LANDING_URL || DEFAULT_LANDING_URL;
+function tenantOf(request: Request, env: Env, body?: Record<string, unknown>): TenantConfig {
+  const url = new URL(request.url);
+  return tenantConfig(resolveTenantId({
+    bodyTenant: body?.tenant,
+    headerTenant: request.headers.get('x-tenant'),
+    queryTenant: url.searchParams.get('tenant'),
+    origin: request.headers.get('Origin') || '',
+    landingUrl: String(body?.landing_url || ''),
+    env: env as TenantEnvSource,
+  }), env as TenantEnvSource);
+}
+
+function refLog(tenant: TenantId): string {
+  return '[' + tenant.toUpperCase() + '][REF]';
 }
 
 async function getLead(db: D1Database, ref: string): Promise<LeadRow | null> {
   return (await db.prepare('SELECT * FROM leads WHERE ref = ?').bind(ref).first()) as LeadRow | null;
 }
 
-async function insertLead(db: D1Database, ref: string, attr: Attribution, status: string): Promise<LeadRow> {
+async function getLeadForTenant(db: D1Database, ref: string, tenant: TenantId): Promise<LeadRow | null> {
+  const row = await getLead(db, ref);
+  if (!row || leadTenant(row) !== tenant) return null;
+  return row;
+}
+
+async function insertLead(db: D1Database, ref: string, attr: Attribution, status: string, tenant: TenantId): Promise<LeadRow> {
   const created = nowIso();
   await db.prepare(`
     INSERT INTO leads (
-      ref, created_at, updated_at, status,
+      ref, created_at, updated_at, status, tenant,
       fbclid, fbp, fbc, utm_source, utm_medium, utm_campaign, utm_content, utm_term,
       campaign_id, adset_id, ad_id, campaign_name, adset_name, ad_name,
       landing_url, referrer, telefono
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).bind(
-    ref, created, created, status,
+    ref, created, created, status, tenant,
     attr.fbclid, attr.fbp, attr.fbc, attr.utm_source, attr.utm_medium, attr.utm_campaign, attr.utm_content, attr.utm_term,
     attr.campaign_id, attr.adset_id, attr.ad_id, attr.campaign_name, attr.adset_name, attr.ad_name,
     attr.landing_url, attr.referrer, attr.telefono,
@@ -164,13 +195,13 @@ async function updateAttribution(db: D1Database, ref: string, attr: Attribution)
   return row;
 }
 
-async function upsertVisit(db: D1Database, requestedRef: unknown, incoming: Attribution): Promise<LeadRow> {
+async function upsertVisit(db: D1Database, requestedRef: unknown, incoming: Attribution, tenant: TenantId): Promise<LeadRow> {
   const requested = pickSearchRef(String(requestedRef || ''));
   if (requested) {
     const existing = await getLead(db, requested);
-    if (existing) {
+    if (existing && leadTenant(existing) === tenant) {
       const updated = await updateAttribution(db, requested, mergeAttribution(existing, incoming));
-      console.log('[ROYAL][REF]', 'persisted', updated.ref);
+      console.log(refLog(tenant), 'persisted', updated.ref);
       return updated;
     }
   }
@@ -178,9 +209,9 @@ async function upsertVisit(db: D1Database, requestedRef: unknown, incoming: Attr
     const next = makeRef();
     const exists = await getLead(db, next);
     if (!exists) {
-      console.log('[ROYAL][REF]', 'created', next);
-      const row = await insertLead(db, next, incoming, 'VISIT');
-      console.log('[ROYAL][REF]', 'persisted', next);
+      console.log(refLog(tenant), 'created', next);
+      const row = await insertLead(db, next, incoming, 'VISIT', tenant);
+      console.log(refLog(tenant), 'persisted', next);
       return row;
     }
   }
@@ -221,12 +252,16 @@ export default {
 
     try {
       if (request.method === 'GET' && url.pathname === '/api/health') {
+        const royal = tenantConfig('royal', env as TenantEnvSource);
+        const kova = tenantConfig('kova', env as TenantEnvSource);
+        const fantastico = tenantConfig('fantastico', env as TenantEnvSource);
         return json(200, {
           ok: true,
-          pixel_id: env.PIXEL_ID || PIXEL_ID,
-          pixel_id_2: env.PIXEL_ID_2 || PIXEL_ID_2,
-          token_configured: Boolean(env.META_ACCESS_TOKEN),
-          token_2_configured: Boolean(env.META_ACCESS_TOKEN_2),
+          tenants: {
+            royal: { pixel_id: royal.meta.PIXEL_ID, token_configured: Boolean(royal.meta.META_ACCESS_TOKEN) },
+            kova: { pixel_id: kova.meta.PIXEL_ID, token_configured: Boolean(kova.meta.META_ACCESS_TOKEN) },
+            fantastico: { pixel_id: fantastico.meta.PIXEL_ID, token_configured: Boolean(fantastico.meta.META_ACCESS_TOKEN) },
+          },
           send_key_configured: Boolean(env.PURCHASE_SEND_KEY),
           db: Boolean(env.DB),
         }, origin);
@@ -236,66 +271,55 @@ export default {
         if (!env.DB) return json(503, { error: 'Base D1 no conectada.' }, origin);
         if (rateLimited(clientIp(request))) return json(429, { error: 'Demasiados intentos.' }, origin);
         const body = await readJson(request);
-        if (!Object.keys(body).length) return json(400, { error: 'Cuerpo inválido.' }, origin);
+        if (!Object.keys(body).length) return json(400, { error: 'Cuerpo invÃ¡lido.' }, origin);
+        const tenant = tenantOf(request, env, body);
         const ip = clientIp(request);
         const userAgent = asText(request.headers.get('User-Agent'), 400);
-        const lead = await persistVisitorContext(env.DB, (await upsertVisit(env.DB, body.ref, attributionFromBody(body))).ref, ip, userAgent);
-        console.log('[ROYAL][REF]', 'returned to landing', lead.ref);
-        void sendMetaEvent({
-          META_ACCESS_TOKEN: env.META_ACCESS_TOKEN || '',
-          META_ACCESS_TOKEN_2: env.META_ACCESS_TOKEN_2 || '',
-          META_TEST_EVENT_CODE: env.META_TEST_EVENT_CODE,
-          PIXEL_ID: env.PIXEL_ID,
-          PIXEL_ID_2: env.PIXEL_ID_2 || PIXEL_ID_2,
-        }, {
+        const lead = await persistVisitorContext(env.DB, (await upsertVisit(env.DB, body.ref, attributionFromBody(body), tenant.id)).ref, ip, userAgent);
+        console.log(refLog(tenant.id), 'returned to landing', lead.ref);
+        void sendMetaEvent(tenant.meta, {
           event_name: 'PageView',
           event_id: pageViewEventId(lead.ref),
-          event_source_url: lead.landing_url || landingUrl(env),
+          event_source_url: lead.landing_url || tenant.landingUrl,
           user_data: await buildUserData(lead, {
             client_ip_address: ip,
             client_user_agent: userAgent,
           }),
           custom_data: {},
         });
-        console.log('[visit] Lead guardado');
-        return json(200, { ok: true, ref: lead.ref, status: lead.status }, origin);
+        console.log('[visit] Lead guardado ' + tenant.id);
+        return json(200, { ok: true, ref: lead.ref, status: lead.status, tenant: tenant.id }, origin);
       }
 
       if (request.method === 'POST' && url.pathname === '/api/lead') {
         if (!env.DB) return json(503, { error: 'Base D1 no conectada.' }, origin);
         if (rateLimited(clientIp(request))) return json(429, { error: 'Demasiados intentos.' }, origin);
         const body = await readJson(request);
-        if (!Object.keys(body).length) return json(400, { error: 'Cuerpo inválido.' }, origin);
+        if (!Object.keys(body).length) return json(400, { error: 'Cuerpo invÃ¡lido.' }, origin);
+        const tenant = tenantOf(request, env, body);
         const ip = clientIp(request);
         const userAgent = asText(request.headers.get('User-Agent'), 400);
-        const lead = await persistVisitorContext(env.DB, (await upsertVisit(env.DB, body.ref, attributionFromBody(body))).ref, ip, userAgent);
+        const lead = await persistVisitorContext(env.DB, (await upsertVisit(env.DB, body.ref, attributionFromBody(body), tenant.id)).ref, ip, userAgent);
         const eventId = asText(body.event_id, 80) || ('lead_' + lead.ref);
-        const metaEnv = {
-          META_ACCESS_TOKEN: env.META_ACCESS_TOKEN || '',
-          META_ACCESS_TOKEN_2: env.META_ACCESS_TOKEN_2 || '',
-          META_TEST_EVENT_CODE: env.META_TEST_EVENT_CODE,
-          PIXEL_ID: env.PIXEL_ID,
-          PIXEL_ID_2: env.PIXEL_ID_2 || PIXEL_ID_2,
-        };
         const visitorData = await buildUserData(lead, {
           client_ip_address: ip,
           client_user_agent: userAgent,
         });
-        void sendMetaEvent(metaEnv, {
+        void sendMetaEvent(tenant.meta, {
           event_name: 'InitiateCheckout',
           event_id: checkoutEventId(lead.ref),
-          event_source_url: lead.landing_url || landingUrl(env),
+          event_source_url: lead.landing_url || tenant.landingUrl,
           user_data: visitorData,
           custom_data: {},
         });
         if (lead.lead_enviado) {
           console.log('[lead] Lead omitido, ya enviado');
-          return json(200, { ok: true, ref: lead.ref, event_id: lead.lead_event_id || eventId, already_sent: true }, origin);
+          return json(200, { ok: true, ref: lead.ref, event_id: lead.lead_event_id || eventId, already_sent: true, tenant: tenant.id }, origin);
         }
-        const meta = await sendMetaEvent(metaEnv, {
+        const meta = await sendMetaEvent(tenant.meta, {
           event_name: 'Lead',
           event_id: eventId,
-          event_source_url: lead.landing_url || landingUrl(env),
+          event_source_url: lead.landing_url || tenant.landingUrl,
           user_data: visitorData,
           custom_data: {},
         });
@@ -329,50 +353,52 @@ export default {
       }
 
       if (request.method === 'POST' && url.pathname === '/api/login') {
-        if (!env.PURCHASE_SEND_KEY) return json(503, { error: 'PURCHASE_SEND_KEY no está configurado en el servidor.' }, origin);
+        if (!env.PURCHASE_SEND_KEY) return json(503, { error: 'PURCHASE_SEND_KEY no estÃ¡ configurado en el servidor.' }, origin);
         const body = await readJson(request);
-        if (asText(body.key, 200) !== env.PURCHASE_SEND_KEY) return json(401, { error: 'Clave inválida.' }, origin);
+        if (asText(body.key, 200) !== env.PURCHASE_SEND_KEY) return json(401, { error: 'Clave invÃ¡lida.' }, origin);
         if (!env.DB) return json(503, { error: 'Base D1 no conectada.' }, origin);
         const token = makeToken();
         const expires = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
         await env.DB.prepare('INSERT INTO sessions (token, created_at, expires_at) VALUES (?, ?, ?)').bind(token, nowIso(), expires).run();
-        console.log('[auth] Sesión creada');
+        console.log('[auth] SesiÃ³n creada');
         return json(200, { ok: true, token, expires_at: expires }, origin);
       }
 
       if (request.method === 'GET' && url.pathname === '/api/search') {
         if (!env.DB) return json(503, { error: 'Base D1 no conectada.' }, origin);
+        const tenant = tenantOf(request, env);
         const q = asText(url.searchParams.get('q'), 300);
-        if (!q) return json(400, { error: 'Escribí un REF o un teléfono.' }, origin);
+        if (!q) return json(400, { error: 'EscribÃ­ un REF o un telÃ©fono.' }, origin);
         let row = null;
         const searchRef = pickSearchRef(q);
-        console.log('[ROYAL][REF]', 'search requested', searchRef || q);
-        if (searchRef) row = await getLead(env.DB, searchRef);
+        console.log(refLog(tenant.id), 'search requested', searchRef || q);
+        if (searchRef) row = await getLeadForTenant(env.DB, searchRef, tenant.id);
         const phone = normalizePhone(q);
         if (!row && phone) {
-          row = await env.DB.prepare('SELECT * FROM leads WHERE telefono = ? ORDER BY created_at DESC LIMIT 1').bind(phone).first() as LeadRow | null;
+          row = await env.DB.prepare('SELECT * FROM leads WHERE telefono = ? AND tenant = ? ORDER BY created_at DESC LIMIT 1').bind(phone, tenant.id).first() as LeadRow | null;
         }
-        if (!row) row = await getLead(env.DB, q.toUpperCase());
+        if (!row) row = await getLeadForTenant(env.DB, q.toUpperCase(), tenant.id);
         if (!row) {
-          console.log('[ROYAL][REF]', 'not found', searchRef || q);
+          console.log(refLog(tenant.id), 'not found', searchRef || q);
           return json(404, { error: 'No encontramos ese cliente.' }, origin);
         }
-        console.log('[ROYAL][REF]', 'found', row.ref);
+        console.log(refLog(tenant.id), 'found', row.ref);
         return json(200, { ok: true, lead: publicLead(row) }, origin);
       }
 
       if (request.method === 'POST' && url.pathname === '/api/purchase') {
         if (!env.DB) return json(503, { error: 'Base D1 no conectada.' }, origin);
-        if (!env.META_ACCESS_TOKEN && !env.META_ACCESS_TOKEN_2) {
+        const body = await readJson(request);
+        const tenant = tenantOf(request, env, body);
+        if (!tenant.meta.META_ACCESS_TOKEN && !tenant.meta.META_ACCESS_TOKEN_2) {
           return json(503, { error: 'Falta META_ACCESS_TOKEN o META_ACCESS_TOKEN_2.' }, origin);
         }
-        const body = await readJson(request);
         const ref = pickSearchRef(asText(body.ref, 300)) || asText(body.ref, 20).toUpperCase();
         const monto = Number(body.monto);
         const force = Boolean(body.force);
         if (!ref) return json(400, { error: 'Falta el REF.' }, origin);
-        if (!Number.isFinite(monto) || monto <= 0) return json(400, { error: 'Monto inválido.' }, origin);
-        const lead = await getLead(env.DB, ref);
+        if (!Number.isFinite(monto) || monto <= 0) return json(400, { error: 'Monto invÃ¡lido.' }, origin);
+        const lead = await getLeadForTenant(env.DB, ref, tenant.id);
         if (!lead) {
           console.log('[purchase] REF no encontrado');
           return json(404, { error: 'REF no encontrado.' }, origin);
@@ -384,17 +410,10 @@ export default {
           client_user_agent: storedOrRequest(lead.user_agent, asText(request.headers.get('User-Agent'), 400)),
         });
         const purchaseCustom = { currency: 'ARS', value: Number(monto.toFixed(2)), order_id: lead.ref };
-        const metaEnv = {
-          META_ACCESS_TOKEN: env.META_ACCESS_TOKEN,
-          META_ACCESS_TOKEN_2: env.META_ACCESS_TOKEN_2 || '',
-          META_TEST_EVENT_CODE: env.META_TEST_EVENT_CODE,
-          PIXEL_ID: env.PIXEL_ID,
-          PIXEL_ID_2: env.PIXEL_ID_2 || PIXEL_ID_2,
-        };
-        const meta = await sendMetaEvent(metaEnv, {
+        const meta = await sendMetaEvent(tenant.meta, {
           event_name: 'Purchase',
           event_id: eventId,
-          event_source_url: lead.landing_url || landingUrl(env),
+          event_source_url: lead.landing_url || tenant.landingUrl,
           user_data: purchaseUserData,
           custom_data: purchaseCustom,
         });
@@ -420,7 +439,7 @@ export default {
           await env.DB.prepare('UPDATE leads SET updated_at = ?, purchase_meta_error = ? WHERE ref = ?').bind(created, metaError, lead.ref).run();
           console.log('[purchase] Purchase error pixel1_ok=false pixel2_ok=false :: ' + metaError);
           return json(502, {
-            error: metaError || 'Meta rechazó el evento.',
+            error: metaError || 'Meta rechazÃ³ el evento.',
             saved: false,
             ...metaPixelPayload(meta),
           }, origin);
@@ -449,11 +468,12 @@ export default {
 
       if (request.method === 'GET' && url.pathname === '/api/spend') {
         if (!env.DB) return json(503, { error: 'Base D1 no conectada.' }, origin);
+        const tenant = tenantOf(request, env);
         const range = parseStatsRange(url.searchParams.get('range'));
         const window = spendWindow(range);
         const spendResult = window.from && window.to
-          ? await env.DB.prepare('SELECT day, usd, fx, updated_at FROM ad_spend WHERE day >= ? AND day <= ? ORDER BY day').bind(window.from, window.to).all()
-          : await env.DB.prepare('SELECT day, usd, fx, updated_at FROM ad_spend ORDER BY day').all();
+          ? await env.DB.prepare('SELECT day, usd, fx, updated_at FROM ad_spend WHERE tenant = ? AND day >= ? AND day <= ? ORDER BY day').bind(tenant.id, window.from, window.to).all()
+          : await env.DB.prepare('SELECT day, usd, fx, updated_at FROM ad_spend WHERE tenant = ? ORDER BY day').bind(tenant.id).all();
         const summary = summarizeSpend((spendResult.results || []) as Array<{ day: string; usd: number; fx: number; updated_at: string }>);
         const current = summary.items.find((row) => row.day === window.editDay);
         return json(200, {
@@ -471,26 +491,30 @@ export default {
       if (request.method === 'POST' && url.pathname === '/api/spend') {
         if (!env.DB) return json(503, { error: 'Base D1 no conectada.' }, origin);
         const body = await request.json().catch(() => ({})) as Record<string, unknown>;
+        const tenant = tenantOf(request, env, body);
         const window = spendWindow(parseStatsRange(body.range));
         const day = isYmd(body.day) ? String(body.day) : window.editDay;
         const usd = Number(body.usd);
         const fx = Number(body.fx);
-        if (!(usd >= 0) || !Number.isFinite(usd)) return json(400, { error: 'Ingresá el gasto en dólares.' }, origin);
-        if (!(fx >= 0) || !Number.isFinite(fx)) return json(400, { error: 'Ingresá la cotización.' }, origin);
+        if (!(usd >= 0) || !Number.isFinite(usd)) return json(400, { error: 'IngresÃ¡ el gasto en dÃ³lares.' }, origin);
+        if (!(fx >= 0) || !Number.isFinite(fx)) return json(400, { error: 'IngresÃ¡ la cotizaciÃ³n.' }, origin);
         await env.DB.prepare(`
-          INSERT INTO ad_spend (day, usd, fx, updated_at) VALUES (?, ?, ?, ?)
-          ON CONFLICT(day) DO UPDATE SET usd = excluded.usd, fx = excluded.fx, updated_at = excluded.updated_at
-        `).bind(day, Math.round(usd * 100) / 100, Math.round(fx * 100) / 100, nowIso()).run();
-        const row = await env.DB.prepare('SELECT day, usd, fx, updated_at FROM ad_spend WHERE day = ?').bind(day).first() as { day: string; usd: number; fx: number; updated_at: string };
+          INSERT INTO ad_spend (tenant, day, usd, fx, updated_at) VALUES (?, ?, ?, ?)
+          ON CONFLICT(tenant, day) DO UPDATE SET usd = excluded.usd, fx = excluded.fx, updated_at = excluded.updated_at
+        `).bind(tenant.id, day, Math.round(usd * 100) / 100, Math.round(fx * 100) / 100, nowIso()).run();
+        const row = await env.DB.prepare('SELECT day, usd, fx, updated_at FROM ad_spend WHERE tenant = ? AND day = ?').bind(tenant.id, day).first() as { day: string; usd: number; fx: number; updated_at: string };
         return json(200, { ok: true, ...summarizeSpend([row]), day: row.day, current_usd: row.usd, current_fx: row.fx }, origin);
       }
 
       if (request.method === 'GET' && url.pathname === '/api/stats') {
         if (!env.DB) return json(503, { error: 'Base D1 no conectada.' }, origin);
+        const tenant = tenantOf(request, env);
         const leadResult = await env.DB.prepare(
-          'SELECT ref, lead_enviado, purchase_enviado, lead_sent_at, created_at FROM leads',
-        ).all();
-        const purchaseResult = await env.DB.prepare('SELECT ref, monto, created_at FROM purchases').all();
+          'SELECT ref, lead_enviado, purchase_enviado, lead_sent_at, created_at FROM leads WHERE tenant = ?',
+        ).bind(tenant.id).all();
+        const purchaseResult = await env.DB.prepare(
+          'SELECT p.ref, p.monto, p.created_at FROM purchases p INNER JOIN leads l ON l.ref = p.ref WHERE l.tenant = ?',
+        ).bind(tenant.id).all();
         return json(
           200,
           buildStats(
@@ -504,38 +528,30 @@ export default {
 
       if (request.method === 'GET' && url.pathname === '/api/purchases') {
         if (!env.DB) return json(503, { error: 'Base D1 no conectada.' }, origin);
+        const tenant = tenantOf(request, env);
         const q = asText(url.searchParams.get('q'), 80);
-        let sql = 'SELECT * FROM purchases';
-        const values: string[] = [];
-        if (q) {
-          const phone = normalizePhone(q);
-          const ref = q.toUpperCase();
-          if (phone) {
-            sql += ' WHERE ref IN (SELECT ref FROM leads WHERE telefono = ?) OR ref LIKE ?';
-            values.push(phone, '%' + ref + '%');
-          } else {
-            sql += ' WHERE ref LIKE ?';
-            values.push('%' + ref + '%');
-          }
-        }
-        sql += ' ORDER BY created_at DESC LIMIT 200';
+        const sql = q
+          ? 'SELECT p.* FROM purchases p INNER JOIN leads l ON l.ref = p.ref WHERE l.tenant = ? AND p.ref LIKE ? ORDER BY p.created_at DESC LIMIT 200'
+          : 'SELECT p.* FROM purchases p INNER JOIN leads l ON l.ref = p.ref WHERE l.tenant = ? ORDER BY p.created_at DESC LIMIT 200';
+        const values = q ? [tenant.id, '%' + q.toUpperCase() + '%'] : [tenant.id];
         const result = await env.DB.prepare(sql).bind(...values).all();
         return json(200, { ok: true, purchases: result.results || [] }, origin);
       }
 
       if (request.method === 'GET' && url.pathname === '/api/leads') {
         if (!env.DB) return json(503, { error: 'Base D1 no conectada.' }, origin);
+        const tenant = tenantOf(request, env);
         const q = asText(url.searchParams.get('q'), 80);
-        let sql = 'SELECT * FROM leads';
-        const values: string[] = [];
+        let sql = 'SELECT * FROM leads WHERE tenant = ?';
+        const values: string[] = [tenant.id];
         if (q) {
           const phone = normalizePhone(q);
           const ref = q.toUpperCase();
           if (phone) {
-            sql += ' WHERE telefono = ? OR ref LIKE ?';
+            sql += ' AND (telefono = ? OR ref LIKE ?)';
             values.push(phone, '%' + ref + '%');
           } else {
-            sql += ' WHERE ref LIKE ?';
+            sql += ' AND ref LIKE ?';
             values.push('%' + ref + '%');
           }
         }
@@ -548,7 +564,8 @@ export default {
       const leadMatch = url.pathname.match(/^\/api\/lead\/([^/]+)$/);
       if (request.method === 'GET' && leadMatch) {
         if (!env.DB) return json(503, { error: 'Base D1 no conectada.' }, origin);
-        const row = await getLead(env.DB, decodeURIComponent(leadMatch[1]).toUpperCase());
+        const tenant = tenantOf(request, env);
+        const row = await getLeadForTenant(env.DB, decodeURIComponent(leadMatch[1]).toUpperCase(), tenant.id);
         if (!row) return json(404, { error: 'REF no encontrado.' }, origin);
         return json(200, { ok: true, lead: publicLead(row) }, origin);
       }
@@ -560,3 +577,4 @@ export default {
     }
   },
 };
+

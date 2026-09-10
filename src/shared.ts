@@ -2,7 +2,10 @@ export const PIXEL_ID = '1767312904299608';
 export const PIXEL_ID_2 = '1075060428238436';
 export const GRAPH_VERSION = 'v21.0';
 export const DEFAULT_LANDING_URL = 'https://ericaroldan966-cmyk.github.io/landingappganamos/';
+export const DEFAULT_KOVA_LANDING_URL = 'https://landing-kovaagency.vercel.app';
 export const REF_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+export const TENANTS = ['royal', 'kova', 'fantastico'] as const;
+export type TenantId = (typeof TENANTS)[number];
 
 export type Attribution = {
   fbclid: string;
@@ -26,6 +29,7 @@ export type Attribution = {
 
 export type LeadRow = Attribution & {
   ref: string;
+  tenant?: string;
   created_at: string;
   updated_at: string;
   status: string;
@@ -74,7 +78,105 @@ export type MetaEnv = {
   META_TEST_EVENT_CODE?: string;
   PIXEL_ID?: string;
   PIXEL_ID_2?: string;
+  META_BRAND?: string;
 };
+
+export type TenantEnvSource = Record<string, string | undefined>;
+
+export type TenantConfig = {
+  id: TenantId;
+  landingUrl: string;
+  meta: MetaEnv;
+};
+
+export function parseTenant(value: unknown): TenantId | '' {
+  const raw = String(value || '').trim().toLowerCase();
+  return TENANTS.includes(raw as TenantId) ? (raw as TenantId) : '';
+}
+
+function hostOf(value: string): string {
+  try {
+    return new URL(value).hostname.toLowerCase();
+  } catch {
+    return String(value || '').replace(/^https?:\/\//i, '').split('/')[0].toLowerCase();
+  }
+}
+
+export function resolveTenantId(input: {
+  bodyTenant?: unknown;
+  headerTenant?: unknown;
+  queryTenant?: unknown;
+  origin?: string;
+  landingUrl?: string;
+  env?: TenantEnvSource;
+}): TenantId {
+  const fromBody = parseTenant(input.bodyTenant);
+  if (fromBody) return fromBody;
+  const fromHeader = parseTenant(input.headerTenant);
+  if (fromHeader) return fromHeader;
+  const fromQuery = parseTenant(input.queryTenant);
+  if (fromQuery) return fromQuery;
+
+  const env = input.env || {};
+  const kovaHost = hostOf(env.KOVA_LANDING_URL || DEFAULT_KOVA_LANDING_URL);
+  const fantHost = hostOf(env.FANTASTICO_LANDING_URL || '');
+  const royalHost = hostOf(env.LANDING_URL || env.ROYAL_LANDING_URL || DEFAULT_LANDING_URL);
+  for (const host of [hostOf(input.origin || ''), hostOf(input.landingUrl || '')]) {
+    if (!host) continue;
+    if (kovaHost && host === kovaHost) return 'kova';
+    if (fantHost && host === fantHost) return 'fantastico';
+    if (royalHost && host === royalHost) return 'royal';
+  }
+  return 'royal';
+}
+
+export function tenantConfig(id: TenantId, env: TenantEnvSource = {}): TenantConfig {
+  const testCode = env.META_TEST_EVENT_CODE || '';
+  if (id === 'kova') {
+    return {
+      id,
+      landingUrl: (env.KOVA_LANDING_URL || DEFAULT_KOVA_LANDING_URL).replace(/\/$/, ''),
+      meta: {
+        META_BRAND: 'KOVA',
+        PIXEL_ID: env.KOVA_PIXEL_ID || '1612969067103162',
+        PIXEL_ID_2: env.KOVA_PIXEL_ID_2 || '936629336158894',
+        META_ACCESS_TOKEN: env.KOVA_META_ACCESS_TOKEN || '',
+        META_ACCESS_TOKEN_2: env.KOVA_META_ACCESS_TOKEN_2 || '',
+        META_TEST_EVENT_CODE: testCode,
+      },
+    };
+  }
+  if (id === 'fantastico') {
+    return {
+      id,
+      landingUrl: String(env.FANTASTICO_LANDING_URL || '').replace(/\/$/, ''),
+      meta: {
+        META_BRAND: 'FANTASTICO',
+        PIXEL_ID: env.FANTASTICO_PIXEL_ID || '',
+        PIXEL_ID_2: env.FANTASTICO_PIXEL_ID_2 || '',
+        META_ACCESS_TOKEN: env.FANTASTICO_META_ACCESS_TOKEN || '',
+        META_ACCESS_TOKEN_2: env.FANTASTICO_META_ACCESS_TOKEN_2 || '',
+        META_TEST_EVENT_CODE: testCode,
+      },
+    };
+  }
+  return {
+    id: 'royal',
+    landingUrl: (env.LANDING_URL || env.ROYAL_LANDING_URL || DEFAULT_LANDING_URL).replace(/\/$/, ''),
+    meta: {
+      META_BRAND: 'ROYAL',
+      PIXEL_ID: env.PIXEL_ID || env.ROYAL_PIXEL_ID || PIXEL_ID,
+      PIXEL_ID_2: env.PIXEL_ID_2 || env.ROYAL_PIXEL_ID_2 || PIXEL_ID_2,
+      META_ACCESS_TOKEN: env.META_ACCESS_TOKEN || env.ROYAL_META_ACCESS_TOKEN || '',
+      META_ACCESS_TOKEN_2: env.META_ACCESS_TOKEN_2 || env.ROYAL_META_ACCESS_TOKEN_2 || '',
+      META_TEST_EVENT_CODE: testCode,
+    },
+  };
+}
+
+export function leadTenant(row: { tenant?: string | null } | null | undefined): TenantId {
+  return parseTenant(row?.tenant) || 'royal';
+}
 
 export function nowIso(): string {
   return new Date().toISOString();
@@ -100,7 +202,7 @@ export function isLocalOrigin(origin: string): boolean {
 export function corsHeaders(origin: string): Record<string, string> {
   return {
     'Access-Control-Allow-Origin': origin || '*',
-    'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Purchase-Key',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Purchase-Key, X-Tenant',
     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
   };
 }
@@ -417,7 +519,9 @@ export function buildStats(range: StatsRange, leads: LeadStatRow[], purchases: P
   };
 }
 
-const META_BRAND = 'ROYAL';
+function metaBrand(env: MetaEnv): string {
+  return String(env.META_BRAND || 'ROYAL').toUpperCase();
+}
 
 export function pageViewEventId(ref: string): string {
   return 'pv_' + ref;
@@ -461,10 +565,11 @@ export async function sendMetaEvent(
     custom_data: Record<string, unknown>;
   },
 ): Promise<MetaSendResult> {
+  const brand = metaBrand(env);
   const token1 = String(env.META_ACCESS_TOKEN || '').trim();
   const token2 = String(env.META_ACCESS_TOKEN_2 || '').trim();
-  const pixel1 = String(env.PIXEL_ID || PIXEL_ID || '').trim();
-  const pixel2 = String(env.PIXEL_ID_2 || PIXEL_ID_2 || '').trim();
+  const pixel1 = String(env.PIXEL_ID || '').trim();
+  const pixel2 = String(env.PIXEL_ID_2 || '').trim();
   const pixel2Enabled = /^\d{5,20}$/.test(pixel2) && pixel2 !== pixel1;
 
   const payload: Record<string, unknown> = {
@@ -517,14 +622,14 @@ export async function sendMetaEvent(
         const message = (data.error && data.error.message)
           || hint
           || ('Error de Meta HTTP ' + response.status + ' events_received=' + String(data.events_received ?? 0));
-        console.log('[META][' + META_BRAND + '] ' + input.event_name + ' error → ' + label + ' ' + pixelId + extra + ' :: ' + message);
+        console.log('[META][' + brand + '] ' + input.event_name + ' error → ' + label + ' ' + pixelId + extra + ' :: ' + message);
         return { ok: false, error: message };
       }
-      console.log('[META][' + META_BRAND + '] ' + input.event_name + ' enviado → ' + label + ' ' + pixelId + extra + ' events_received=' + String(data.events_received) + (hint ? ' :: ' + hint : ''));
+      console.log('[META][' + brand + '] ' + input.event_name + ' enviado → ' + label + ' ' + pixelId + extra + ' events_received=' + String(data.events_received) + (hint ? ' :: ' + hint : ''));
       return { ok: true, events_received: data.events_received, fbtrace_id: data.fbtrace_id };
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Error de Meta';
-      console.log('[META][' + META_BRAND + '] ' + input.event_name + ' error → ' + label + ' ' + pixelId + extra + ' :: ' + message);
+      console.log('[META][' + brand + '] ' + input.event_name + ' error → ' + label + ' ' + pixelId + extra + ' :: ' + message);
       return { ok: false, error: message };
     }
   };
@@ -535,7 +640,7 @@ export async function sendMetaEvent(
   if (token1 && /^\d{5,20}$/.test(pixel1)) {
     pixel1Result = await sendToPixel(pixel1, token1, 'PIXEL_ID');
   } else {
-    console.log('[META][' + META_BRAND + '] ' + input.event_name + ' omitido → PIXEL_ID');
+    console.log('[META][' + brand + '] ' + input.event_name + ' omitido → PIXEL_ID');
     pixel1Result = { ok: false, error: 'Falta PIXEL_ID o META_ACCESS_TOKEN' };
   }
 
@@ -543,7 +648,7 @@ export async function sendMetaEvent(
     if (token2) {
       pixel2Result = await sendToPixel(pixel2, token2, 'PIXEL_ID_2');
     } else {
-      console.log('[META][' + META_BRAND + '] ' + input.event_name + ' omitido → PIXEL_ID_2 (falta META_ACCESS_TOKEN_2)');
+      console.log('[META][' + brand + '] ' + input.event_name + ' omitido → PIXEL_ID_2 (falta META_ACCESS_TOKEN_2)');
       pixel2Result = { ok: false, error: 'Falta META_ACCESS_TOKEN_2 para PIXEL_ID_2' };
     }
   } else {

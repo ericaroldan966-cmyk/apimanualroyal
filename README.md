@@ -1,26 +1,42 @@
-# Ganamos API
+# Ganamos API (multi-tenant)
 
-Backend de la landing y el panel.
+Un solo backend para Royal, Kova y Fantastico. Railway: `apimanualroyal`.
 
 ## Local
 
 `npm run dev` en `http://127.0.0.1:8787`
 
-El Access Token de Meta va en `.dev.vars`, nunca en GitHub.
-
-```
-META_ACCESS_TOKEN=
-PURCHASE_SEND_KEY=
-META_TEST_EVENT_CODE=
-```
+Tokens de Meta en `.dev.vars`, nunca en GitHub.
 
 ## Railway
 
-1. New Project → Deploy from GitHub → `apimanualroyal`
-2. Variables:
-   - `META_ACCESS_TOKEN`
-   - `PURCHASE_SEND_KEY`
-   - `PIXEL_ID` = `1767312904299608`
-3. Volume montado en `/data`
-4. Settings → Generate Domain
-5. En Vercel, en las dos webs, cargar `VITE_API_URL` con esa URL (sin barra al final) y redesplegar
+Queda **un** deploy: `apimanualroyal-production.up.railway.app`
+
+No borres las variables actuales de Royal. Agregá las de Kova y Fantastico.
+
+Royal (ya deberían estar):
+
+- `META_ACCESS_TOKEN`
+- `META_ACCESS_TOKEN_2`
+- `PIXEL_ID`
+- `PIXEL_ID_2`
+- `PURCHASE_SEND_KEY`
+- `LANDING_URL`
+
+Kova (copiar del Railway viejo de Kova **antes** de apagarlo):
+
+- `KOVA_PIXEL_ID` = `1612969067103162`
+- `KOVA_PIXEL_ID_2` = `936629336158894`
+- `KOVA_META_ACCESS_TOKEN`
+- `KOVA_META_ACCESS_TOKEN_2`
+- `KOVA_LANDING_URL` = `https://landing-kovaagency.vercel.app`
+
+Fantastico:
+
+- `FANTASTICO_PIXEL_ID`
+- `FANTASTICO_PIXEL_ID_2`
+- `FANTASTICO_META_ACCESS_TOKEN`
+- `FANTASTICO_META_ACCESS_TOKEN_2`
+- `FANTASTICO_LANDING_URL` (URL de Vercel de esa landing)
+
+Volume en `/data`. Las landings y paneles usan `VITE_API_URL=https://apimanualroyal-production.up.railway.app` (sin barra al final).
