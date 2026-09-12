@@ -669,7 +669,9 @@ export async function sendMetaEvent(
     ? ' value=' + String((input.custom_data || {}).value ?? '') + ' currency=' + String((input.custom_data || {}).currency ?? '')
     : '';
 
-  const sendToPixel = async (pixelId: string, token: string, label: string) => {
+  type PixelAttempt = { ok: boolean; error?: string; events_received?: number; fbtrace_id?: string; retryable?: boolean };
+
+  const sendToPixelOnce = async (pixelId: string, token: string, label: string): Promise<PixelAttempt> => {
     const graphUrl =
       'https://graph.facebook.com/' +
       GRAPH_VERSION +
@@ -701,22 +703,48 @@ export async function sendMetaEvent(
           || hint
           || ('Error de Meta HTTP ' + response.status + ' events_received=' + String(data.events_received ?? 0));
         console.log('[META][' + brand + '] ' + input.event_name + ' error → ' + label + ' ' + pixelId + extra + ' :: ' + message);
-        return { ok: false, error: message };
+        return { ok: false, error: message, retryable: response.status >= 500 || response.status === 429 };
       }
       console.log('[META][' + brand + '] ' + input.event_name + ' enviado → ' + label + ' ' + pixelId + extra + ' events_received=' + String(data.events_received) + (hint ? ' :: ' + hint : ''));
       return { ok: true, events_received: data.events_received, fbtrace_id: data.fbtrace_id };
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Error de Meta';
       console.log('[META][' + brand + '] ' + input.event_name + ' error → ' + label + ' ' + pixelId + extra + ' :: ' + message);
-      return { ok: false, error: message };
+      return { ok: false, error: message, retryable: true };
     }
   };
 
-  let pixel1Result: { ok: boolean; error?: string; events_received?: number; fbtrace_id?: string } = { ok: false, error: 'PIXEL_ID omitido' };
-  let pixel2Result: { ok: boolean; error?: string; events_received?: number; fbtrace_id?: string } = { ok: false, error: 'PIXEL_ID_2 omitido' };
+  const sendToPixel = async (pixelId: string, token: string, label: string): Promise<PixelAttempt> => {
+    let result = await sendToPixelOnce(pixelId, token, label);
+    if (!result.ok && result.retryable) result = await sendToPixelOnce(pixelId, token, label);
+    return result;
+  };
 
-  if (token1 && /^\d{5,20}$/.test(pixel1)) {
-    pixel1Result = await sendToPixel(pixel1, token1, 'PIXEL_ID');
+  const sendWithTokens = async (
+    pixelId: string,
+    tokens: Array<{ token: string; label: string }>,
+    omitLabel: string,
+  ): Promise<PixelAttempt> => {
+    if (!tokens.length) {
+      console.log('[META][' + brand + '] ' + input.event_name + ' omitido → ' + omitLabel);
+      return { ok: false, error: 'Falta token para ' + omitLabel };
+    }
+    let last: PixelAttempt = { ok: false, error: 'Falta token para ' + omitLabel };
+    for (const item of tokens) {
+      last = await sendToPixel(pixelId, item.token, item.label);
+      if (last.ok) return last;
+    }
+    return last;
+  };
+
+  let pixel1Result: PixelAttempt = { ok: false, error: 'PIXEL_ID omitido' };
+  let pixel2Result: PixelAttempt = { ok: false, error: 'PIXEL_ID_2 omitido' };
+
+  if (/^\d{5,20}$/.test(pixel1)) {
+    const pixel1Tokens: Array<{ token: string; label: string }> = [];
+    if (token1) pixel1Tokens.push({ token: token1, label: 'PIXEL_ID' });
+    if (token2 && token2 !== token1) pixel1Tokens.push({ token: token2, label: 'PIXEL_ID' });
+    pixel1Result = await sendWithTokens(pixel1, pixel1Tokens, 'PIXEL_ID');
   } else {
     console.log('[META][' + brand + '] ' + input.event_name + ' omitido → PIXEL_ID');
     pixel1Result = { ok: false, error: 'Falta PIXEL_ID o META_ACCESS_TOKEN' };
@@ -726,15 +754,7 @@ export async function sendMetaEvent(
     const pixel2Tokens: Array<{ token: string; label: string }> = [];
     if (token2) pixel2Tokens.push({ token: token2, label: 'PIXEL_ID_2' });
     if (token1 && token1 !== token2) pixel2Tokens.push({ token: token1, label: 'PIXEL_ID_2' });
-    if (!pixel2Tokens.length) {
-      console.log('[META][' + brand + '] ' + input.event_name + ' omitido → PIXEL_ID_2 (falta token)');
-      pixel2Result = { ok: false, error: 'Falta token para PIXEL_ID_2' };
-    } else {
-      for (const item of pixel2Tokens) {
-        pixel2Result = await sendToPixel(pixel2, item.token, item.label);
-        if (pixel2Result.ok) break;
-      }
-    }
+    pixel2Result = await sendWithTokens(pixel2, pixel2Tokens, 'PIXEL_ID_2');
   } else {
     pixel2Result = { ok: true };
   }
