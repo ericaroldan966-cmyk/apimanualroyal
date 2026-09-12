@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
-import { displayCode, isValidRef, pickSearchRef, publicCode, PURCHASE_LEAD_JOIN } from '../src/shared.ts';
+import { displayCode, isValidRef, pickPersonId, pickSearchRef, publicCode, PURCHASE_LEAD_JOIN } from '../src/shared.ts';
 
 const failures: string[] = [];
 function assert(condition: unknown, message: string): void {
@@ -51,7 +51,7 @@ function insertLead(tenant = 'royal', ad: number | null = null) {
 }
 
 function upsertVisit(requestedRef: unknown, tenant = 'royal', ad: number | null = null) {
-  const requested = pickSearchRef(String(requestedRef || ''));
+  const requested = pickPersonId(String(requestedRef || ''));
   if (requested) {
     const existing = findLead(requested, tenant);
     if (existing) return existing;
@@ -90,6 +90,9 @@ assert(pickSearchRef('quiero mi 100%!') !== '100', 'TEST3 100 percent is not a p
 assert(pickSearchRef('47') === '47', 'TEST3 person id');
 assert(pickSearchRef('123456') === '123456', 'TEST3 digits are not REF-');
 assert(pickSearchRef('A8K92P') === 'REF-A8K92P', 'TEST3 suffix');
+assert(pickPersonId('REF-47') === '47', 'TEST3 visit only accepts person id');
+assert(pickPersonId('REF-A8K92P') === '', 'TEST3 visit ignores letter REF');
+assert(pickPersonId('J4GVF') === '', 'TEST3 visit ignores truncated letter REF');
 
 assert(!pickSearchRef(''), 'TEST4 empty is not a code');
 const failedSave = null as { ref?: string } | null;
@@ -115,6 +118,9 @@ db.prepare(`
 `).run('REF-A8K92P', now, now);
 const legacy = findLead('REF-A8K92P', 'royal');
 assert(legacy?.ref === 'REF-A8K92P', 'TEST7 old REF still searchable');
+const letterVisit = upsertVisit('REF-A8K92P', 'royal');
+assert(letterVisit.ref !== 'REF-A8K92P', 'TEST7 visit does not reuse letter identity');
+assert(/^\d+$/.test(letterVisit.ref), 'TEST7 visit always returns a number');
 if (legacy) {
   db.prepare('INSERT INTO purchases (ref, monto, event_id, created_at) VALUES (?, ?, ?, ?)').run(String(legacy.id), 1000, 'purchase_' + legacy.id + '_x', now);
   const joined = db.prepare('SELECT p.monto ' + PURCHASE_LEAD_JOIN + ' WHERE l.tenant = ? AND CAST(l.id AS TEXT) = ?').get('royal', String(legacy.id)) as { monto: number } | undefined;

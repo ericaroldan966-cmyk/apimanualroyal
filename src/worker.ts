@@ -1,4 +1,4 @@
-﻿import {
+import {
   asText,
   attributionFromBody,
   buildStats,
@@ -17,6 +17,7 @@
   firstForwardedIp,
   storedOrRequest,
   pickSearchRef,
+  pickPersonId,
   publicCode,
   unwrapDisplayCode,
   publicLead,
@@ -206,7 +207,7 @@ async function updateAttribution(db: D1Database, lead: LeadRow, attr: Attributio
 }
 
 async function upsertVisit(db: D1Database, requestedRef: unknown, incoming: Attribution, tenant: TenantId): Promise<LeadRow> {
-  const requested = pickSearchRef(String(requestedRef || ''));
+  const requested = pickPersonId(String(requestedRef || ''));
   if (requested) {
     const existing = await findLead(db, requested, tenant);
     if (existing) {
@@ -260,9 +261,24 @@ export default {
         return json(200, {
           ok: true,
           tenants: {
-            royal: { pixel_id: royal.meta.PIXEL_ID, token_configured: Boolean(royal.meta.META_ACCESS_TOKEN) },
-            kova: { pixel_id: kova.meta.PIXEL_ID, token_configured: Boolean(kova.meta.META_ACCESS_TOKEN) },
-            fantastico: { pixel_id: fantastico.meta.PIXEL_ID, token_configured: Boolean(fantastico.meta.META_ACCESS_TOKEN) },
+            royal: {
+              pixel_id: royal.meta.PIXEL_ID,
+              pixel_id_2: royal.meta.PIXEL_ID_2,
+              token_configured: Boolean(royal.meta.META_ACCESS_TOKEN),
+              token2_configured: Boolean(royal.meta.META_ACCESS_TOKEN_2),
+            },
+            kova: {
+              pixel_id: kova.meta.PIXEL_ID,
+              pixel_id_2: kova.meta.PIXEL_ID_2,
+              token_configured: Boolean(kova.meta.META_ACCESS_TOKEN),
+              token2_configured: Boolean(kova.meta.META_ACCESS_TOKEN_2),
+            },
+            fantastico: {
+              pixel_id: fantastico.meta.PIXEL_ID,
+              pixel_id_2: fantastico.meta.PIXEL_ID_2,
+              token_configured: Boolean(fantastico.meta.META_ACCESS_TOKEN),
+              token2_configured: Boolean(fantastico.meta.META_ACCESS_TOKEN_2),
+            },
           },
           send_key_configured: Boolean(env.PURCHASE_SEND_KEY),
           db: Boolean(env.DB),

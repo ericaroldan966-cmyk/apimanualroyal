@@ -24,6 +24,7 @@ import {
   firstForwardedIp,
   storedOrRequest,
   pickSearchRef,
+  pickPersonId,
   publicCode,
   unwrapDisplayCode,
   publicLead,
@@ -250,7 +251,7 @@ function persistVisitorContext(lead: LeadRow, ip: string, userAgent: string): Le
 }
 
 function upsertVisit(requestedRef: unknown, incoming: Attribution, tenant: TenantId): LeadRow {
-  const requested = pickSearchRef(String(requestedRef || ''));
+  const requested = pickPersonId(String(requestedRef || ''));
   if (requested) {
     const existing = findLead(requested, tenant);
     if (existing) {
@@ -290,13 +291,30 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'GET' && url.pathname === '/api/health') {
     const royal = tenantConfig('royal', process.env);
     const kova = tenantConfig('kova', process.env);
+    const fantastico = tenantConfig('fantastico', process.env);
     send(res, dbError ? 503 : 200, {
       ok: !dbError,
       db: dbReady,
       error: dbError || undefined,
       tenants: {
-        royal: { pixel_id: royal.meta.PIXEL_ID, token_configured: Boolean(royal.meta.META_ACCESS_TOKEN) },
-        kova: { pixel_id: kova.meta.PIXEL_ID, token_configured: Boolean(kova.meta.META_ACCESS_TOKEN) },
+        royal: {
+          pixel_id: royal.meta.PIXEL_ID,
+          pixel_id_2: royal.meta.PIXEL_ID_2,
+          token_configured: Boolean(royal.meta.META_ACCESS_TOKEN),
+          token2_configured: Boolean(royal.meta.META_ACCESS_TOKEN_2),
+        },
+        kova: {
+          pixel_id: kova.meta.PIXEL_ID,
+          pixel_id_2: kova.meta.PIXEL_ID_2,
+          token_configured: Boolean(kova.meta.META_ACCESS_TOKEN),
+          token2_configured: Boolean(kova.meta.META_ACCESS_TOKEN_2),
+        },
+        fantastico: {
+          pixel_id: fantastico.meta.PIXEL_ID,
+          pixel_id_2: fantastico.meta.PIXEL_ID_2,
+          token_configured: Boolean(fantastico.meta.META_ACCESS_TOKEN),
+          token2_configured: Boolean(fantastico.meta.META_ACCESS_TOKEN_2),
+        },
       },
       send_key_configured: Boolean(ENV.PURCHASE_SEND_KEY),
     }, origin);
@@ -662,9 +680,12 @@ server.listen(PORT, HOST, () => {
   console.log('[API] db ' + dbPath, process.env.RAILWAY_VOLUME_MOUNT_PATH ? 'persistent-volume' : 'local-data-dir');
   const royal = tenantConfig('royal', process.env);
   const kova = tenantConfig('kova', process.env);
+  const fantastico = tenantConfig('fantastico', process.env);
   if (!ENV.PURCHASE_SEND_KEY) console.log('[API] Falta PURCHASE_SEND_KEY');
   if (!royal.meta.META_ACCESS_TOKEN) console.log('[API][ROYAL] META_ACCESS_TOKEN pendiente');
   if (!kova.meta.META_ACCESS_TOKEN) console.log('[API][KOVA] KOVA_META_ACCESS_TOKEN pendiente');
+  if (!fantastico.meta.META_ACCESS_TOKEN) console.log('[API][FANTASTICO] FANTASTICO_META_ACCESS_TOKEN pendiente');
+  if (!fantastico.meta.META_ACCESS_TOKEN_2) console.log('[API][FANTASTICO] FANTASTICO_META_ACCESS_TOKEN_2 pendiente');
   setImmediate(() => {
     try {
       openDatabase();

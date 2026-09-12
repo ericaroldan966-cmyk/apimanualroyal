@@ -254,7 +254,7 @@ export function displayCode(value: string): string {
 export function whatsappCode(value: string): string {
   const raw = unwrapDisplayCode(value);
   if (isPersonId(raw)) return 'REF-\u2060' + raw;
-  return raw;
+  return '';
 }
 
 export function parseAd(value: unknown): number {
@@ -388,6 +388,11 @@ export function pickSearchRef(q: string): string {
   }
   if (/^[A-Z0-9]{6,12}$/.test(compact) && /[A-Z]/.test(compact)) return 'REF-' + compact;
   return '';
+}
+
+export function pickPersonId(q: string): string {
+  const raw = unwrapDisplayCode(pickSearchRef(q));
+  return isPersonId(raw) ? raw : '';
 }
 
 export function normalizeRef(q: string): string {
