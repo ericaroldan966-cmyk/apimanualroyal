@@ -29,8 +29,10 @@ function getLeadByRef(ref: string): { id: number; ref: string; tenant: string } 
 
 function findLead(code: string, tenant?: string) {
   const raw = String(code || '').trim();
+  const letter = pickSearchRef(raw);
   let row = /^\d{1,10}$/.test(raw) ? getLeadById(Number(raw)) : null;
   if (!row) row = getLeadByRef(raw);
+  if (!row && letter) row = getLeadByRef(letter) || (db.prepare('SELECT id, ref, tenant FROM leads WHERE legacy_ref = ?').get(letter) as { id: number; ref: string; tenant: string } | undefined) || null;
   if (!row) return null;
   if (tenant && row.tenant !== tenant) return null;
   return row;
@@ -51,10 +53,18 @@ function insertLead(tenant = 'royal', ad: number | null = null) {
 }
 
 function upsertVisit(requestedRef: unknown, tenant = 'royal', ad: number | null = null) {
-  const requested = pickPersonId(String(requestedRef || ''));
-  if (requested) {
+  const personId = pickPersonId(String(requestedRef || ''));
+  if (personId) {
+    const existing = findLead(personId, tenant);
+    if (existing) return existing;
+  }
+  const requested = pickSearchRef(String(requestedRef || ''));
+  if (requested && /^REF-[A-Z0-9]{6,12}$/.test(requested)) {
     const existing = findLead(requested, tenant);
     if (existing) return existing;
+    const row = insertLead(tenant, ad);
+    db.prepare('UPDATE leads SET legacy_ref = ? WHERE id = ?').run(requested, row.id);
+    return getLeadById(row.id) || row;
   }
   return insertLead(tenant, ad);
 }
@@ -119,8 +129,11 @@ db.prepare(`
 const legacy = findLead('REF-A8K92P', 'royal');
 assert(legacy?.ref === 'REF-A8K92P', 'TEST7 old REF still searchable');
 const letterVisit = upsertVisit('REF-A8K92P', 'royal');
-assert(letterVisit.ref !== 'REF-A8K92P', 'TEST7 visit does not reuse letter identity');
-assert(/^\d+$/.test(letterVisit.ref), 'TEST7 visit always returns a number');
+assert(letterVisit.id === legacy?.id, 'TEST7 visit reuses the old letter person');
+const freshLetter = upsertVisit('REF-9AO8GR', 'royal');
+assert(/^\d+$/.test(freshLetter.ref), 'TEST7 new letter visit still returns a number');
+assert(freshLetter.ref !== 'REF-9AO8GR', 'TEST7 public code stays numeric');
+assert(findLead('REF-9AO8GR', 'royal')?.id === freshLetter.id, 'TEST7 panel can search the letter and get the number');
 if (legacy) {
   db.prepare('INSERT INTO purchases (ref, monto, event_id, created_at) VALUES (?, ?, ?, ?)').run(String(legacy.id), 1000, 'purchase_' + legacy.id + '_x', now);
   const joined = db.prepare('SELECT p.monto ' + PURCHASE_LEAD_JOIN + ' WHERE l.tenant = ? AND CAST(l.id AS TEXT) = ?').get('royal', String(legacy.id)) as { monto: number } | undefined;

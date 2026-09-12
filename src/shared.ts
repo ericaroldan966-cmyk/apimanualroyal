@@ -50,6 +50,7 @@ export type LeadRow = Attribution & {
   fecha_purchase: string | null;
   purchase_events_received: number | null;
   purchase_meta_error: string | null;
+  legacy_ref?: string | null;
 };
 
 export type PublicLead = {

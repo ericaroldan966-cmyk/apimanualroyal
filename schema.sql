@@ -36,7 +36,8 @@ CREATE TABLE IF NOT EXISTS leads (
   monto_purchase REAL,
   fecha_purchase TEXT,
   purchase_events_received INTEGER,
-  purchase_meta_error TEXT
+  purchase_meta_error TEXT,
+  legacy_ref TEXT
 );
 
 CREATE TABLE IF NOT EXISTS purchases (

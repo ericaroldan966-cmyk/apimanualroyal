@@ -25,6 +25,7 @@ import {
   storedOrRequest,
   pickSearchRef,
   pickPersonId,
+  isLegacyRef,
   publicCode,
   unwrapDisplayCode,
   publicLead,
@@ -160,13 +161,19 @@ function getLeadByRef(ref: string): LeadRow | null {
   return asLead(db.prepare('SELECT rowid, * FROM leads WHERE ref = ?').get(ref));
 }
 
+function getLeadByLegacyRef(ref: string): LeadRow | null {
+  return asLead(db.prepare('SELECT rowid, * FROM leads WHERE legacy_ref = ?').get(ref));
+}
+
 function findLead(code: string, tenant?: TenantId): LeadRow | null {
   const raw = unwrapDisplayCode(String(code || '').trim());
   if (!raw) return null;
+  const letter = pickSearchRef(raw);
   let row: LeadRow | null = null;
   if (isPersonId(raw)) row = getLeadById(Number(raw));
   if (!row) row = getLeadByRef(raw);
   if (!row && isPersonId(raw)) row = getLeadByRef(raw);
+  if (!row && letter && isLegacyRef(letter)) row = getLeadByLegacyRef(letter) || getLeadByRef(letter);
   if (!row) return null;
   if (tenant && leadTenant(row) !== tenant) return null;
   return row;
@@ -250,15 +257,35 @@ function persistVisitorContext(lead: LeadRow, ip: string, userAgent: string): Le
   return row;
 }
 
+function attachLegacyRef(row: LeadRow, letter: string): LeadRow {
+  if (!isLegacyRef(letter) || !row.id) return row;
+  const taken = getLeadByLegacyRef(letter) || getLeadByRef(letter);
+  if (taken && taken.id !== row.id) return row;
+  db.prepare('UPDATE leads SET legacy_ref = ? WHERE rowid = ?').run(letter, row.id);
+  return getLeadById(row.id) || row;
+}
+
 function upsertVisit(requestedRef: unknown, incoming: Attribution, tenant: TenantId): LeadRow {
-  const requested = pickPersonId(String(requestedRef || ''));
-  if (requested) {
-    const existing = findLead(requested, tenant);
+  const personId = pickPersonId(String(requestedRef || ''));
+  if (personId) {
+    const existing = findLead(personId, tenant);
     if (existing) {
       const updated = updateAttribution(existing, mergeAttribution(existing, incoming));
       console.log(refLog(tenant), 'persisted', publicCode(updated));
       return updated;
     }
+  }
+  const requested = pickSearchRef(String(requestedRef || ''));
+  if (requested && isLegacyRef(requested)) {
+    const existing = findLead(requested, tenant);
+    if (existing) {
+      const updated = updateAttribution(existing, mergeAttribution(existing, incoming));
+      console.log(refLog(tenant), 'persisted', publicCode(updated), requested);
+      return updated;
+    }
+    const created = attachLegacyRef(insertLead(incoming, 'VISIT', tenant), requested);
+    console.log(refLog(tenant), 'created', publicCode(created), requested);
+    return created;
   }
   const row = insertLead(incoming, 'VISIT', tenant);
   console.log(refLog(tenant), 'created', publicCode(row));
@@ -645,9 +672,9 @@ const server = http.createServer(async (req, res) => {
       if (q) {
         const phone = normalizePhone(q);
         if (phone) {
-          rows = db.prepare('SELECT rowid, * FROM leads WHERE tenant = ? AND (telefono = ? OR ref LIKE ? OR CAST(rowid AS TEXT) = ?) ORDER BY created_at DESC LIMIT 200').all(tenant.id, phone, '%' + code.toUpperCase() + '%', code) as LeadRow[];
+          rows = db.prepare('SELECT rowid, * FROM leads WHERE tenant = ? AND (telefono = ? OR ref LIKE ? OR legacy_ref LIKE ? OR CAST(rowid AS TEXT) = ?) ORDER BY created_at DESC LIMIT 200').all(tenant.id, phone, '%' + code.toUpperCase() + '%', '%' + code.toUpperCase() + '%', code) as LeadRow[];
         } else {
-          rows = db.prepare('SELECT rowid, * FROM leads WHERE tenant = ? AND (ref LIKE ? OR CAST(rowid AS TEXT) = ?) ORDER BY created_at DESC LIMIT 200').all(tenant.id, '%' + code.toUpperCase() + '%', code) as LeadRow[];
+          rows = db.prepare('SELECT rowid, * FROM leads WHERE tenant = ? AND (ref LIKE ? OR legacy_ref LIKE ? OR CAST(rowid AS TEXT) = ?) ORDER BY created_at DESC LIMIT 200').all(tenant.id, '%' + code.toUpperCase() + '%', '%' + code.toUpperCase() + '%', code) as LeadRow[];
         }
       } else {
         rows = db.prepare('SELECT rowid, * FROM leads WHERE tenant = ? ORDER BY created_at DESC LIMIT 200').all(tenant.id) as LeadRow[];

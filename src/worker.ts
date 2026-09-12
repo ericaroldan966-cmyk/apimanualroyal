@@ -18,6 +18,7 @@ import {
   storedOrRequest,
   pickSearchRef,
   pickPersonId,
+  isLegacyRef,
   publicCode,
   unwrapDisplayCode,
   publicLead,
@@ -146,12 +147,18 @@ async function getLeadByRef(db: D1Database, ref: string): Promise<LeadRow | null
   return (await db.prepare('SELECT * FROM leads WHERE ref = ?').bind(ref).first()) as LeadRow | null;
 }
 
+async function getLeadByLegacyRef(db: D1Database, ref: string): Promise<LeadRow | null> {
+  return (await db.prepare('SELECT * FROM leads WHERE legacy_ref = ?').bind(ref).first()) as LeadRow | null;
+}
+
 async function findLead(db: D1Database, code: string, tenant?: TenantId): Promise<LeadRow | null> {
   const raw = unwrapDisplayCode(String(code || '').trim());
   if (!raw) return null;
+  const letter = pickSearchRef(raw);
   let row: LeadRow | null = null;
   if (isPersonId(raw)) row = await getLeadById(db, Number(raw));
   if (!row) row = await getLeadByRef(db, raw);
+  if (!row && letter && isLegacyRef(letter)) row = await getLeadByLegacyRef(db, letter) || await getLeadByRef(db, letter);
   if (!row) return null;
   if (tenant && leadTenant(row) !== tenant) return null;
   return row;
@@ -206,15 +213,35 @@ async function updateAttribution(db: D1Database, lead: LeadRow, attr: Attributio
   return row;
 }
 
+async function attachLegacyRef(db: D1Database, row: LeadRow, letter: string): Promise<LeadRow> {
+  if (!isLegacyRef(letter) || !row.id) return row;
+  const taken = await getLeadByLegacyRef(db, letter) || await getLeadByRef(db, letter);
+  if (taken && taken.id !== row.id) return row;
+  await db.prepare('UPDATE leads SET legacy_ref = ? WHERE id = ?').bind(letter, row.id).run();
+  return await getLeadById(db, Number(row.id)) || row;
+}
+
 async function upsertVisit(db: D1Database, requestedRef: unknown, incoming: Attribution, tenant: TenantId): Promise<LeadRow> {
-  const requested = pickPersonId(String(requestedRef || ''));
-  if (requested) {
-    const existing = await findLead(db, requested, tenant);
+  const personId = pickPersonId(String(requestedRef || ''));
+  if (personId) {
+    const existing = await findLead(db, personId, tenant);
     if (existing) {
       const updated = await updateAttribution(db, existing, mergeAttribution(existing, incoming));
       console.log(refLog(tenant), 'persisted', publicCode(updated));
       return updated;
     }
+  }
+  const requested = pickSearchRef(String(requestedRef || ''));
+  if (requested && isLegacyRef(requested)) {
+    const existing = await findLead(db, requested, tenant);
+    if (existing) {
+      const updated = await updateAttribution(db, existing, mergeAttribution(existing, incoming));
+      console.log(refLog(tenant), 'persisted', publicCode(updated), requested);
+      return updated;
+    }
+    const created = await attachLegacyRef(db, await insertLead(db, incoming, 'VISIT', tenant), requested);
+    console.log(refLog(tenant), 'created', publicCode(created), requested);
+    return created;
   }
   const row = await insertLead(db, incoming, 'VISIT', tenant);
   console.log(refLog(tenant), 'created', publicCode(row));
@@ -578,11 +605,11 @@ export default {
           const phone = normalizePhone(q);
           const ref = code.toUpperCase();
           if (phone) {
-            sql += ' AND (telefono = ? OR ref LIKE ? OR CAST(rowid AS TEXT) = ?)';
-            values.push(phone, '%' + ref + '%', code);
+            sql += ' AND (telefono = ? OR ref LIKE ? OR legacy_ref LIKE ? OR CAST(rowid AS TEXT) = ?)';
+            values.push(phone, '%' + ref + '%', '%' + ref + '%', code);
           } else {
-            sql += ' AND (ref LIKE ? OR CAST(rowid AS TEXT) = ?)';
-            values.push('%' + ref + '%', code);
+            sql += ' AND (ref LIKE ? OR legacy_ref LIKE ? OR CAST(rowid AS TEXT) = ?)';
+            values.push('%' + ref + '%', '%' + ref + '%', code);
           }
         }
         sql += ' ORDER BY created_at DESC LIMIT 200';
