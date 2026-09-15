@@ -31,13 +31,12 @@ Kova (copiar del Railway viejo de Kova **antes** de apagarlo):
 - `KOVA_META_ACCESS_TOKEN_2`
 - `KOVA_LANDING_URL` = `https://landing-kovaagency.vercel.app`
 
-Fantastico:
+Fantastico (mismo pixel 1 de Kova; landings y compras quedan en tenant `fantastico`):
 
-- `FANTASTICO_PIXEL_ID`
-- `FANTASTICO_PIXEL_ID_2`
-- `FANTASTICO_META_ACCESS_TOKEN`
-- `FANTASTICO_META_ACCESS_TOKEN_2`
-- `FANTASTICO_LANDING_URL` (URL de Vercel de esa landing)
+- `FANTASTICO_PIXEL_ID` = `1612969067103162` (pixelkova1SOUL)
+- `FANTASTICO_PIXEL_ID_2` — vacío
+- `FANTASTICO_META_ACCESS_TOKEN` (mismo token CAPI que `KOVA_META_ACCESS_TOKEN`)
+- `FANTASTICO_LANDING_URL` = `https://fantastico-theta.vercel.app`
 
 Volume en `/data`. En cada deploy el API aplica `migrations/*.sql` pendientes sobre ese archivo. Las landings y paneles usan `VITE_API_URL=https://apimanualroyal-production.up.railway.app` (sin barra al final).
 
