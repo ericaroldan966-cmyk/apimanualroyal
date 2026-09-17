@@ -4,9 +4,11 @@ export const GRAPH_VERSION = 'v21.0';
 export const DEFAULT_LANDING_URL = 'https://ericaroldan966-cmyk.github.io/landingappganamos/';
 export const DEFAULT_KOVA_LANDING_URL = 'https://landing-kovaagency.vercel.app';
 export const DEFAULT_FANTASTICO_LANDING_URL = 'https://fantastico-theta.vercel.app';
+export const DEFAULT_PARAGUAY_LANDING_URL = 'https://ganamospanel.vercel.app';
+export const DEFAULT_PARAGUAY_PANEL_URL = 'https://paraguaymanual.vercel.app';
 export const FANTASTICO_PIXEL_ID = '1612969067103162';
 export const REF_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-export const TENANTS = ['royal', 'kova', 'fantastico'] as const;
+export const TENANTS = ['royal', 'kova', 'fantastico', 'paraguay'] as const;
 export type TenantId = (typeof TENANTS)[number];
 
 export type Attribution = {
@@ -93,6 +95,7 @@ export type TenantEnvSource = Record<string, string | undefined>;
 export type TenantConfig = {
   id: TenantId;
   landingUrl: string;
+  currency: 'ARS' | 'PYG';
   meta: MetaEnv;
 };
 
@@ -127,11 +130,15 @@ export function resolveTenantId(input: {
   const env = input.env || {};
   const kovaHost = hostOf(env.KOVA_LANDING_URL || DEFAULT_KOVA_LANDING_URL);
   const fantHost = hostOf(env.FANTASTICO_LANDING_URL || '');
+  const pyHost = hostOf(env.PARAGUAY_LANDING_URL || DEFAULT_PARAGUAY_LANDING_URL);
+  const pyPanelHost = hostOf(env.PARAGUAY_PANEL_URL || DEFAULT_PARAGUAY_PANEL_URL);
   const royalHost = hostOf(env.LANDING_URL || env.ROYAL_LANDING_URL || DEFAULT_LANDING_URL);
   for (const host of [hostOf(input.origin || ''), hostOf(input.landingUrl || '')]) {
     if (!host) continue;
     if (kovaHost && host === kovaHost) return 'kova';
     if (fantHost && host === fantHost) return 'fantastico';
+    if (pyHost && host === pyHost) return 'paraguay';
+    if (pyPanelHost && host === pyPanelHost) return 'paraguay';
     if (royalHost && host === royalHost) return 'royal';
   }
   return 'royal';
@@ -143,6 +150,7 @@ export function tenantConfig(id: TenantId, env: TenantEnvSource = {}): TenantCon
     return {
       id,
       landingUrl: (env.KOVA_LANDING_URL || DEFAULT_KOVA_LANDING_URL).replace(/\/$/, ''),
+      currency: 'ARS',
       meta: {
         META_BRAND: 'KOVA',
         PIXEL_ID: env.KOVA_PIXEL_ID || '1612969067103162',
@@ -157,6 +165,7 @@ export function tenantConfig(id: TenantId, env: TenantEnvSource = {}): TenantCon
     return {
       id,
       landingUrl: (env.FANTASTICO_LANDING_URL || DEFAULT_FANTASTICO_LANDING_URL).replace(/\/$/, ''),
+      currency: 'ARS',
       meta: {
         META_BRAND: 'FANTASTICO',
         PIXEL_ID: env.FANTASTICO_PIXEL_ID || FANTASTICO_PIXEL_ID,
@@ -167,9 +176,25 @@ export function tenantConfig(id: TenantId, env: TenantEnvSource = {}): TenantCon
       },
     };
   }
+  if (id === 'paraguay') {
+    return {
+      id,
+      landingUrl: (env.PARAGUAY_LANDING_URL || DEFAULT_PARAGUAY_LANDING_URL).replace(/\/$/, ''),
+      currency: 'PYG',
+      meta: {
+        META_BRAND: 'PARAGUAY',
+        PIXEL_ID: env.PARAGUAY_PIXEL_ID || '',
+        PIXEL_ID_2: env.PARAGUAY_PIXEL_ID_2 || '',
+        META_ACCESS_TOKEN: env.PARAGUAY_META_ACCESS_TOKEN || '',
+        META_ACCESS_TOKEN_2: env.PARAGUAY_META_ACCESS_TOKEN_2 || '',
+        META_TEST_EVENT_CODE: testCode,
+      },
+    };
+  }
   return {
     id: 'royal',
     landingUrl: (env.LANDING_URL || env.ROYAL_LANDING_URL || DEFAULT_LANDING_URL).replace(/\/$/, ''),
+    currency: 'ARS',
     meta: {
       META_BRAND: 'ROYAL',
       PIXEL_ID: env.PIXEL_ID || env.ROYAL_PIXEL_ID || PIXEL_ID,
@@ -218,6 +243,8 @@ export function normalizePhone(value: unknown): string {
   let digits = String(value || '').replace(/\D/g, '');
   if (!digits) return '';
   if (digits.startsWith('00')) digits = digits.slice(2);
+  if (digits.startsWith('595')) return digits;
+  if (digits.length === 9 && digits.startsWith('9')) return '595' + digits;
   if (digits.length === 10 && digits.startsWith('11')) digits = '54' + digits;
   if (digits.length === 11 && digits.startsWith('15')) digits = '549' + digits.slice(2);
   if (!digits.startsWith('54') && digits.length >= 8 && digits.length <= 11) {

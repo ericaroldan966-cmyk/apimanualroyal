@@ -1,6 +1,6 @@
 # Ganamos API (multi-tenant)
 
-Un solo backend para Royal, Kova y Fantastico. Railway: `apimanualroyal`.
+Un solo backend para Royal, Kova, Fantastico y Paraguay. Railway: `apimanualroyal`.
 
 ## Local
 
@@ -38,7 +38,15 @@ Fantastico (mismo pixel 1 de Kova; landings y compras quedan en tenant `fantasti
 - `FANTASTICO_META_ACCESS_TOKEN` (mismo token CAPI que `KOVA_META_ACCESS_TOKEN`)
 - `FANTASTICO_LANDING_URL` = `https://fantastico-theta.vercel.app`
 
-Volume en `/data`. En cada deploy el API aplica `migrations/*.sql` pendientes sobre ese archivo. Las landings y paneles usan `VITE_API_URL=https://apimanualroyal-production.up.railway.app` (sin barra al final).
+Paraguay (no borres las de arriba; agregá estas):
+
+- `PARAGUAY_PIXEL_ID`
+- `PARAGUAY_PIXEL_ID_2` — vacío si no hay segundo píxel
+- `PARAGUAY_META_ACCESS_TOKEN`
+- `PARAGUAY_META_ACCESS_TOKEN_2` — vacío si no hay
+- `PARAGUAY_LANDING_URL` = `https://ganamospanel.vercel.app`
+
+Volume en `/data`. En cada deploy el API aplica `migrations/*.sql` pendientes sobre ese archivo. Las landings y paneles usan `VITE_API_URL=https://apimanualroyal-production.up.railway.app` (sin barra al final). El panel de Paraguay manda `VITE_TENANT=paraguay`.
 
 ## Schema
 

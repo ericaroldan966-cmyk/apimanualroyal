@@ -56,6 +56,12 @@ type Env = {
   FANTASTICO_META_ACCESS_TOKEN?: string;
   FANTASTICO_META_ACCESS_TOKEN_2?: string;
   FANTASTICO_LANDING_URL?: string;
+  PARAGUAY_PIXEL_ID?: string;
+  PARAGUAY_PIXEL_ID_2?: string;
+  PARAGUAY_META_ACCESS_TOKEN?: string;
+  PARAGUAY_META_ACCESS_TOKEN_2?: string;
+  PARAGUAY_LANDING_URL?: string;
+  PARAGUAY_PANEL_URL?: string;
 };
 
 const hits = new Map<string, number[]>();
@@ -285,6 +291,7 @@ export default {
         const royal = tenantConfig('royal', env as TenantEnvSource);
         const kova = tenantConfig('kova', env as TenantEnvSource);
         const fantastico = tenantConfig('fantastico', env as TenantEnvSource);
+        const paraguay = tenantConfig('paraguay', env as TenantEnvSource);
         return json(200, {
           ok: true,
           tenants: {
@@ -305,6 +312,12 @@ export default {
               pixel_id_2: fantastico.meta.PIXEL_ID_2,
               token_configured: Boolean(fantastico.meta.META_ACCESS_TOKEN),
               token2_configured: Boolean(fantastico.meta.META_ACCESS_TOKEN_2),
+            },
+            paraguay: {
+              pixel_id: paraguay.meta.PIXEL_ID,
+              pixel_id_2: paraguay.meta.PIXEL_ID_2,
+              token_configured: Boolean(paraguay.meta.META_ACCESS_TOKEN),
+              token2_configured: Boolean(paraguay.meta.META_ACCESS_TOKEN_2),
             },
           },
           send_key_configured: Boolean(env.PURCHASE_SEND_KEY),
@@ -462,7 +475,7 @@ export default {
           client_ip_address: storedOrRequest(lead.client_ip, clientIp(request)),
           client_user_agent: storedOrRequest(lead.user_agent, asText(request.headers.get('User-Agent'), 400)),
         });
-        const purchaseCustom = { currency: 'ARS', value: Number(monto.toFixed(2)), order_id: code };
+        const purchaseCustom = { currency: tenant.currency, value: Number(monto.toFixed(2)), order_id: code };
         const meta = await sendMetaEvent(tenant.meta, {
           event_name: 'Purchase',
           event_id: eventId,

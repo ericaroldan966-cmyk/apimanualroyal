@@ -319,6 +319,7 @@ const server = http.createServer(async (req, res) => {
     const royal = tenantConfig('royal', process.env);
     const kova = tenantConfig('kova', process.env);
     const fantastico = tenantConfig('fantastico', process.env);
+    const paraguay = tenantConfig('paraguay', process.env);
     send(res, dbError ? 503 : 200, {
       ok: !dbError,
       db: dbReady,
@@ -341,6 +342,12 @@ const server = http.createServer(async (req, res) => {
           pixel_id_2: fantastico.meta.PIXEL_ID_2,
           token_configured: Boolean(fantastico.meta.META_ACCESS_TOKEN),
           token2_configured: Boolean(fantastico.meta.META_ACCESS_TOKEN_2),
+        },
+        paraguay: {
+          pixel_id: paraguay.meta.PIXEL_ID,
+          pixel_id_2: paraguay.meta.PIXEL_ID_2,
+          token_configured: Boolean(paraguay.meta.META_ACCESS_TOKEN),
+          token2_configured: Boolean(paraguay.meta.META_ACCESS_TOKEN_2),
         },
       },
       send_key_configured: Boolean(ENV.PURCHASE_SEND_KEY),
@@ -525,7 +532,7 @@ const server = http.createServer(async (req, res) => {
         client_ip_address: storedOrRequest(lead.client_ip, requestVisitorIp(req)),
         client_user_agent: storedOrRequest(lead.user_agent, asText(req.headers['user-agent'], 400)),
       });
-      const purchaseCustom = { currency: 'ARS', value: Number(monto.toFixed(2)), order_id: code };
+      const purchaseCustom = { currency: tenant.currency, value: Number(monto.toFixed(2)), order_id: code };
       const meta = await sendMetaEvent(tenant.meta, {
         event_name: 'Purchase',
         event_id: eventId,
@@ -708,11 +715,13 @@ server.listen(PORT, HOST, () => {
   const royal = tenantConfig('royal', process.env);
   const kova = tenantConfig('kova', process.env);
   const fantastico = tenantConfig('fantastico', process.env);
+  const paraguay = tenantConfig('paraguay', process.env);
   if (!ENV.PURCHASE_SEND_KEY) console.log('[API] Falta PURCHASE_SEND_KEY');
   if (!royal.meta.META_ACCESS_TOKEN) console.log('[API][ROYAL] META_ACCESS_TOKEN pendiente');
   if (!kova.meta.META_ACCESS_TOKEN) console.log('[API][KOVA] KOVA_META_ACCESS_TOKEN pendiente');
   if (!fantastico.meta.META_ACCESS_TOKEN) console.log('[API][FANTASTICO] FANTASTICO_META_ACCESS_TOKEN pendiente');
   if (!fantastico.meta.META_ACCESS_TOKEN_2) console.log('[API][FANTASTICO] FANTASTICO_META_ACCESS_TOKEN_2 pendiente');
+  if (!paraguay.meta.META_ACCESS_TOKEN) console.log('[API][PARAGUAY] PARAGUAY_META_ACCESS_TOKEN pendiente');
   setImmediate(() => {
     try {
       openDatabase();
