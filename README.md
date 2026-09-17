@@ -44,7 +44,7 @@ Paraguay (no borres las de arriba; agregá estas):
 - `PARAGUAY_PIXEL_ID_2` — vacío si no hay segundo píxel
 - `PARAGUAY_META_ACCESS_TOKEN`
 - `PARAGUAY_META_ACCESS_TOKEN_2` — vacío si no hay
-- `PARAGUAY_LANDING_URL` = `https://ganamospanel.vercel.app`
+- `PARAGUAY_LANDING_URL` = `https://bigwinpy.vercel.app`
 
 Volume en `/data`. En cada deploy el API aplica `migrations/*.sql` pendientes sobre ese archivo. Las landings y paneles usan `VITE_API_URL=https://apimanualroyal-production.up.railway.app` (sin barra al final). El panel de Paraguay manda `VITE_TENANT=paraguay`.
 
