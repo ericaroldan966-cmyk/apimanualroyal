@@ -428,6 +428,11 @@ export function normalizeRef(q: string): string {
 }
 
 export const AR_TZ = 'America/Argentina/Buenos_Aires';
+export const PY_TZ = 'America/Asuncion';
+
+export function statsTimezone(tenantId: TenantId): string {
+  return tenantId === 'paraguay' ? PY_TZ : AR_TZ;
+}
 
 export type StatsRange = 'today' | 'yesterday' | '7d' | 'all';
 
@@ -454,9 +459,9 @@ export type StatsBucket = {
   conversion: number;
 };
 
-function arDateParts(date: Date): { y: number; m: number; d: number; h: number } {
+function datePartsInTz(date: Date, timeZone: string): { y: number; m: number; d: number; h: number } {
   const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: AR_TZ,
+    timeZone,
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
@@ -467,8 +472,24 @@ function arDateParts(date: Date): { y: number; m: number; d: number; h: number }
   return { y: read('year'), m: read('month'), d: read('day'), h: read('hour') };
 }
 
+function arDateParts(date: Date): { y: number; m: number; d: number; h: number } {
+  return datePartsInTz(date, AR_TZ);
+}
+
+function midnightInTz(y: number, m: number, d: number, timeZone: string): Date {
+  let utc = Date.UTC(y, m - 1, d, 12, 0, 0);
+  for (let i = 0; i < 8; i++) {
+    const local = datePartsInTz(new Date(utc), timeZone);
+    const deltaDays = Date.UTC(y, m - 1, d) - Date.UTC(local.y, local.m - 1, local.d);
+    const next = utc + deltaDays + (0 - local.h) * 3600000;
+    if (next === utc) break;
+    utc = next;
+  }
+  return new Date(utc);
+}
+
 function arMidnight(y: number, m: number, d: number): Date {
-  return new Date(Date.UTC(y, m - 1, d, 3, 0, 0));
+  return midnightInTz(y, m, d, AR_TZ);
 }
 
 function addDays(date: Date, days: number): Date {
@@ -539,10 +560,15 @@ function inWindow(iso: string, from: Date | null, to: Date | null): boolean {
   return true;
 }
 
-export function buildStats(range: StatsRange, leads: LeadStatRow[], purchases: PurchaseStatRow[]) {
+export function buildStats(
+  range: StatsRange,
+  leads: LeadStatRow[],
+  purchases: PurchaseStatRow[],
+  timeZone: string = AR_TZ,
+) {
   const now = new Date();
-  const today = arDateParts(now);
-  const todayStart = arMidnight(today.y, today.m, today.d);
+  const today = datePartsInTz(now, timeZone);
+  const todayStart = midnightInTz(today.y, today.m, today.d, timeZone);
   let from: Date | null = todayStart;
   let to: Date | null = addDays(todayStart, 1);
   let bucketMode: 'hour' | 'day' = 'hour';
@@ -564,12 +590,14 @@ export function buildStats(range: StatsRange, leads: LeadStatRow[], purchases: P
     if (!row.lead_enviado) return false;
     return inWindow(row.lead_sent_at || row.created_at, from, to);
   });
-  const loadedCount = arrived.filter((row) => row.purchase_enviado).length;
-  const pending = arrived.length - loadedCount;
   const periodPurchases = purchases.filter((row) => inWindow(row.created_at, from, to));
+  const uniqueChargeRefs = new Set(periodPurchases.map((row) => String(row.ref || '')));
+  const loadedCount = uniqueChargeRefs.size;
+  const pending = arrived.filter((row) => !row.purchase_enviado).length;
   const totalMonto = periodPurchases.reduce((sum, row) => sum + Number(row.monto || 0), 0);
   const average = periodPurchases.length ? totalMonto / periodPurchases.length : 0;
-  const conversion = arrived.length ? Math.round((loadedCount / arrived.length) * 1000) / 10 : 0;
+  const conversionCount = timeZone === PY_TZ ? periodPurchases.length : loadedCount;
+  const conversion = arrived.length ? Math.round((conversionCount / arrived.length) * 1000) / 10 : 0;
 
   const counts = new Map<string, { arrived: number; loaded: number; charges: number }>();
   const touch = (key: string, field: 'arrived' | 'loaded' | 'charges') => {
@@ -580,7 +608,7 @@ export function buildStats(range: StatsRange, leads: LeadStatRow[], purchases: P
 
   for (const row of arrived) {
     const when = new Date(row.lead_sent_at || row.created_at);
-    const parts = arDateParts(when);
+    const parts = datePartsInTz(when, timeZone);
     const key = bucketMode === 'hour' ? String(parts.h).padStart(2, '0') : ymd(parts.y, parts.m, parts.d);
     touch(key, 'arrived');
     if (row.purchase_enviado) touch(key, 'loaded');
@@ -588,7 +616,7 @@ export function buildStats(range: StatsRange, leads: LeadStatRow[], purchases: P
 
   for (const row of periodPurchases) {
     const when = new Date(row.created_at);
-    const parts = arDateParts(when);
+    const parts = datePartsInTz(when, timeZone);
     const key = bucketMode === 'hour' ? String(parts.h).padStart(2, '0') : ymd(parts.y, parts.m, parts.d);
     touch(key, 'charges');
   }
@@ -604,7 +632,9 @@ export function buildStats(range: StatsRange, leads: LeadStatRow[], purchases: P
         arrived: current.arrived,
         loaded: current.loaded,
         charges: current.charges,
-        conversion: current.arrived ? Math.round((current.loaded / current.arrived) * 1000) / 10 : 0,
+        conversion: current.arrived
+          ? Math.round(((timeZone === PY_TZ ? current.charges : current.loaded) / current.arrived) * 1000) / 10
+          : 0,
       });
     }
   } else {
@@ -617,7 +647,9 @@ export function buildStats(range: StatsRange, leads: LeadStatRow[], purchases: P
         arrived: current.arrived,
         loaded: current.loaded,
         charges: current.charges,
-        conversion: current.arrived ? Math.round((current.loaded / current.arrived) * 1000) / 10 : 0,
+        conversion: current.arrived
+          ? Math.round(((timeZone === PY_TZ ? current.charges : current.loaded) / current.arrived) * 1000) / 10
+          : 0,
       });
     }
   }
@@ -625,7 +657,7 @@ export function buildStats(range: StatsRange, leads: LeadStatRow[], purchases: P
   return {
     ok: true,
     range,
-    timezone: AR_TZ,
+    timezone: timeZone,
     arrived: arrived.length,
     loaded: loadedCount,
     pending,

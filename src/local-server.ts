@@ -33,6 +33,7 @@ import {
   isPersonId,
   resolveTenantId,
   sendMetaEvent,
+  statsTimezone,
   tenantConfig,
   metaFailureMessage,
   metaPixelPayload,
@@ -650,13 +651,13 @@ const server = http.createServer(async (req, res) => {
         created_at: string;
       }>;
       const purchases = db.prepare(
-        'SELECT p.ref, p.monto, p.created_at ' + PURCHASE_LEAD_JOIN + ' WHERE l.tenant = ?',
+        'SELECT p.ref, p.monto, p.created_at ' + PURCHASE_LEAD_JOIN + ' WHERE l.tenant = ? GROUP BY p.id',
       ).all(tenant.id) as Array<{
         ref: string;
         monto: number;
         created_at: string;
       }>;
-      send(res, 200, buildStats(parseStatsRange(url.searchParams.get('range')), leads, purchases), origin);
+      send(res, 200, buildStats(parseStatsRange(url.searchParams.get('range')), leads, purchases, statsTimezone(tenant.id)), origin);
       return;
     }
 
@@ -665,8 +666,8 @@ const server = http.createServer(async (req, res) => {
       const q = asText(url.searchParams.get('q'), 80);
       const code = pickSearchRef(q) || q.trim();
       const rows = q
-        ? db.prepare('SELECT p.* ' + PURCHASE_LEAD_JOIN + ' WHERE l.tenant = ? AND (p.ref LIKE ? OR CAST(l.rowid AS TEXT) = ?) ORDER BY p.created_at DESC LIMIT 200').all(tenant.id, '%' + code.toUpperCase() + '%', code)
-        : db.prepare('SELECT p.* ' + PURCHASE_LEAD_JOIN + ' WHERE l.tenant = ? ORDER BY p.created_at DESC LIMIT 200').all(tenant.id);
+        ? db.prepare('SELECT p.* ' + PURCHASE_LEAD_JOIN + ' WHERE l.tenant = ? AND (p.ref LIKE ? OR CAST(l.rowid AS TEXT) = ?) GROUP BY p.id ORDER BY p.created_at DESC LIMIT 5000').all(tenant.id, '%' + code.toUpperCase() + '%', code)
+        : db.prepare('SELECT p.* ' + PURCHASE_LEAD_JOIN + ' WHERE l.tenant = ? GROUP BY p.id ORDER BY p.created_at DESC LIMIT 5000').all(tenant.id);
       send(res, 200, { ok: true, purchases: rows }, origin);
       return;
     }

@@ -26,6 +26,7 @@ import {
   isPersonId,
   resolveTenantId,
   sendMetaEvent,
+  statsTimezone,
   tenantConfig,
   metaFailureMessage,
   metaPixelPayload,
@@ -581,7 +582,7 @@ export default {
           'SELECT ref, lead_enviado, purchase_enviado, lead_sent_at, created_at FROM leads WHERE tenant = ?',
         ).bind(tenant.id).all();
         const purchaseResult = await env.DB.prepare(
-          'SELECT p.ref, p.monto, p.created_at ' + PURCHASE_LEAD_JOIN + ' WHERE l.tenant = ?',
+          'SELECT p.ref, p.monto, p.created_at ' + PURCHASE_LEAD_JOIN + ' WHERE l.tenant = ? GROUP BY p.id',
         ).bind(tenant.id).all();
         return json(
           200,
@@ -589,6 +590,7 @@ export default {
             parseStatsRange(url.searchParams.get('range')),
             (leadResult.results || []) as LeadRow[],
             (purchaseResult.results || []) as Array<{ ref: string; monto: number; created_at: string }>,
+            statsTimezone(tenant.id),
           ),
           origin,
         );
@@ -600,8 +602,8 @@ export default {
         const q = asText(url.searchParams.get('q'), 80);
         const code = pickSearchRef(q) || q.trim();
         const sql = q
-          ? 'SELECT p.* ' + PURCHASE_LEAD_JOIN + ' WHERE l.tenant = ? AND (p.ref LIKE ? OR CAST(l.rowid AS TEXT) = ?) ORDER BY p.created_at DESC LIMIT 200'
-          : 'SELECT p.* ' + PURCHASE_LEAD_JOIN + ' WHERE l.tenant = ? ORDER BY p.created_at DESC LIMIT 200';
+          ? 'SELECT p.* ' + PURCHASE_LEAD_JOIN + ' WHERE l.tenant = ? AND (p.ref LIKE ? OR CAST(l.rowid AS TEXT) = ?) GROUP BY p.id ORDER BY p.created_at DESC LIMIT 5000'
+          : 'SELECT p.* ' + PURCHASE_LEAD_JOIN + ' WHERE l.tenant = ? GROUP BY p.id ORDER BY p.created_at DESC LIMIT 5000';
         const values = q ? [tenant.id, '%' + code.toUpperCase() + '%', code] : [tenant.id];
         const result = await env.DB.prepare(sql).bind(...values).all();
         return json(200, { ok: true, purchases: result.results || [] }, origin);
