@@ -450,6 +450,7 @@ export type StatsBucket = {
   label: string;
   arrived: number;
   loaded: number;
+  charges: number;
   conversion: number;
 };
 
@@ -570,9 +571,9 @@ export function buildStats(range: StatsRange, leads: LeadStatRow[], purchases: P
   const average = periodPurchases.length ? totalMonto / periodPurchases.length : 0;
   const conversion = arrived.length ? Math.round((loadedCount / arrived.length) * 1000) / 10 : 0;
 
-  const counts = new Map<string, { arrived: number; loaded: number }>();
-  const touch = (key: string, field: 'arrived' | 'loaded') => {
-    const current = counts.get(key) || { arrived: 0, loaded: 0 };
+  const counts = new Map<string, { arrived: number; loaded: number; charges: number }>();
+  const touch = (key: string, field: 'arrived' | 'loaded' | 'charges') => {
+    const current = counts.get(key) || { arrived: 0, loaded: 0, charges: 0 };
     current[field] += 1;
     counts.set(key, current);
   };
@@ -585,28 +586,37 @@ export function buildStats(range: StatsRange, leads: LeadStatRow[], purchases: P
     if (row.purchase_enviado) touch(key, 'loaded');
   }
 
+  for (const row of periodPurchases) {
+    const when = new Date(row.created_at);
+    const parts = arDateParts(when);
+    const key = bucketMode === 'hour' ? String(parts.h).padStart(2, '0') : ymd(parts.y, parts.m, parts.d);
+    touch(key, 'charges');
+  }
+
   const buckets: StatsBucket[] = [];
   if (bucketMode === 'hour' && from && to) {
     for (let hour = 0; hour < 24; hour++) {
       const key = String(hour).padStart(2, '0');
-      const current = counts.get(key) || { arrived: 0, loaded: 0 };
+      const current = counts.get(key) || { arrived: 0, loaded: 0, charges: 0 };
       buckets.push({
         key,
         label: key + ':00',
         arrived: current.arrived,
         loaded: current.loaded,
+        charges: current.charges,
         conversion: current.arrived ? Math.round((current.loaded / current.arrived) * 1000) / 10 : 0,
       });
     }
   } else {
     const keys = [...counts.keys()].sort();
     for (const key of keys) {
-      const current = counts.get(key) || { arrived: 0, loaded: 0 };
+      const current = counts.get(key) || { arrived: 0, loaded: 0, charges: 0 };
       buckets.push({
         key,
         label: key,
         arrived: current.arrived,
         loaded: current.loaded,
+        charges: current.charges,
         conversion: current.arrived ? Math.round((current.loaded / current.arrived) * 1000) / 10 : 0,
       });
     }
