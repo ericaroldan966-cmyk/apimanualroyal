@@ -183,10 +183,10 @@ export function tenantConfig(id: TenantId, env: TenantEnvSource = {}): TenantCon
       currency: 'PYG',
       meta: {
         META_BRAND: 'PARAGUAY',
-        PIXEL_ID: env.PARAGUAY_PIXEL_ID || '',
+        PIXEL_ID: env.PARAGUAY_PIXEL_ID || PIXEL_ID,
         PIXEL_ID_2: env.PARAGUAY_PIXEL_ID_2 || '',
-        META_ACCESS_TOKEN: env.PARAGUAY_META_ACCESS_TOKEN || '',
-        META_ACCESS_TOKEN_2: env.PARAGUAY_META_ACCESS_TOKEN_2 || '',
+        META_ACCESS_TOKEN: env.PARAGUAY_META_ACCESS_TOKEN || env.META_ACCESS_TOKEN || '',
+        META_ACCESS_TOKEN_2: env.PARAGUAY_META_ACCESS_TOKEN_2 || env.META_ACCESS_TOKEN_2 || '',
         META_TEST_EVENT_CODE: testCode,
       },
     };
@@ -674,7 +674,11 @@ function metaBrand(env: MetaEnv): string {
 }
 
 export const PURCHASE_LEAD_JOIN =
-  'FROM purchases p INNER JOIN leads l ON (l.ref = p.ref OR CAST(l.rowid AS TEXT) = p.ref)';
+  'FROM purchases p INNER JOIN leads l ON (l.ref = p.ref OR CAST(l.id AS TEXT) = p.ref OR CAST(l.rowid AS TEXT) = p.ref)';
+
+export function purchaseEventId(code: string): string {
+  return 'purchase_' + code + '_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
+}
 
 export function pageViewEventId(ref: string): string {
   return 'pv_' + ref;

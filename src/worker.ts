@@ -23,6 +23,7 @@ import {
   unwrapDisplayCode,
   publicLead,
   PURCHASE_LEAD_JOIN,
+  purchaseEventId,
   isPersonId,
   resolveTenantId,
   sendMetaEvent,
@@ -31,6 +32,7 @@ import {
   metaFailureMessage,
   metaPixelPayload,
   type Attribution,
+  type MetaSendResult,
   type LeadRow,
   type TenantConfig,
   type TenantId,
@@ -163,7 +165,12 @@ async function findLead(db: D1Database, code: string, tenant?: TenantId): Promis
   if (!raw) return null;
   const letter = pickSearchRef(raw);
   let row: LeadRow | null = null;
-  if (isPersonId(raw)) row = await getLeadById(db, Number(raw));
+  if (tenant) {
+    row = await db.prepare(
+      'SELECT * FROM leads WHERE tenant = ? AND (CAST(id AS TEXT) = ? OR ref = ? OR legacy_ref = ?) ORDER BY id DESC LIMIT 1',
+    ).bind(tenant, raw, raw, letter || raw).first() as LeadRow | null;
+  }
+  if (!row && isPersonId(raw)) row = await getLeadById(db, Number(raw));
   if (!row) row = await getLeadByRef(db, raw);
   if (!row && letter && isLegacyRef(letter)) row = await getLeadByLegacyRef(db, letter) || await getLeadByRef(db, letter);
   if (!row) return null;
@@ -456,10 +463,7 @@ export default {
         if (!env.DB) return json(503, { error: 'Base D1 no conectada.' }, origin);
         const body = await readJson(request);
         const tenant = tenantOf(request, env, body);
-        if (!tenant.meta.META_ACCESS_TOKEN && !tenant.meta.META_ACCESS_TOKEN_2) {
-          return json(503, { error: 'Falta META_ACCESS_TOKEN o META_ACCESS_TOKEN_2.' }, origin);
-        }
-        const ref = pickSearchRef(asText(body.ref, 300)) || asText(body.ref, 20);
+        const ref = pickSearchRef(asText(body.ref, 300)) || unwrapDisplayCode(asText(body.ref, 40)) || asText(body.ref, 20);
         const monto = Number(body.monto);
         const force = Boolean(body.force);
         if (!ref) return json(400, { error: 'Falta el código.' }, origin);
@@ -471,19 +475,27 @@ export default {
         }
         const alreadyHadPurchase = Boolean(lead.purchase_enviado);
         const code = publicCode(lead);
-        const eventId = 'purchase_' + code + '_' + Date.now().toString(36);
+        const eventId = purchaseEventId(code);
         const purchaseUserData = await buildUserData(lead, {
           client_ip_address: storedOrRequest(lead.client_ip, clientIp(request)),
           client_user_agent: storedOrRequest(lead.user_agent, asText(request.headers.get('User-Agent'), 400)),
         });
         const purchaseCustom = { currency: tenant.currency, value: Number(monto.toFixed(2)), order_id: code };
-        const meta = await sendMetaEvent(tenant.meta, {
-          event_name: 'Purchase',
+        const metaPayload = {
+          event_name: 'Purchase' as const,
           event_id: eventId,
           event_source_url: lead.landing_url || tenant.landingUrl,
           user_data: purchaseUserData,
           custom_data: purchaseCustom,
-        });
+        };
+        let meta: MetaSendResult;
+        try {
+          meta = await sendMetaEvent(tenant.meta, metaPayload);
+          if (!meta.pixel1_ok && !meta.pixel2_ok) meta = await sendMetaEvent(tenant.meta, metaPayload);
+        } catch (err) {
+          const message = err instanceof Error ? err.message : 'Error de Meta';
+          meta = { ok: false, pixel1_ok: false, pixel2_ok: false, error: message };
+        }
         const created = nowIso();
         const saleSaved = meta.pixel1_ok || meta.pixel2_ok;
         const metaStatus = meta.ok ? 'ok' : (saleSaved ? 'partial' : 'error');
@@ -502,15 +514,6 @@ export default {
           metaError,
           (force || alreadyHadPurchase) ? 1 : 0,
         ).run();
-        if (!saleSaved) {
-          await env.DB.prepare('UPDATE leads SET updated_at = ?, purchase_meta_error = ? WHERE ref = ?').bind(created, metaError, lead.ref).run();
-          console.log('[purchase] Purchase error pixel1_ok=false pixel2_ok=false :: ' + metaError);
-          return json(502, {
-            error: metaError || 'Meta rechazÃ³ el evento.',
-            saved: false,
-            ...metaPixelPayload(meta),
-          }, origin);
-        }
         await env.DB.prepare(`
           UPDATE leads SET
             updated_at = ?, status = 'PURCHASE', purchase_enviado = 1,
@@ -521,8 +524,9 @@ export default {
         console.log('[purchase] Purchase guardado pixel1_ok=' + String(meta.pixel1_ok) + ' pixel2_ok=' + String(meta.pixel2_ok) + (meta.ok ? '' : ' :: ' + metaError));
         const updated = await getLeadById(env.DB, Number(lead.id));
         return json(200, {
-          ok: meta.ok,
+          ok: true,
           saved: true,
+          meta_ok: meta.ok,
           ref: code,
           id: lead.id,
           a: Number(lead.ad) || 0,

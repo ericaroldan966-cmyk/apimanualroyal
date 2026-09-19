@@ -30,6 +30,7 @@ import {
   unwrapDisplayCode,
   publicLead,
   PURCHASE_LEAD_JOIN,
+  purchaseEventId,
   isPersonId,
   resolveTenantId,
   sendMetaEvent,
@@ -171,7 +172,12 @@ function findLead(code: string, tenant?: TenantId): LeadRow | null {
   if (!raw) return null;
   const letter = pickSearchRef(raw);
   let row: LeadRow | null = null;
-  if (isPersonId(raw)) row = getLeadById(Number(raw));
+  if (tenant) {
+    row = asLead(db.prepare(
+      'SELECT rowid, * FROM leads WHERE tenant = ? AND (CAST(rowid AS TEXT) = ? OR ref = ? OR legacy_ref = ?) ORDER BY rowid DESC LIMIT 1',
+    ).get(tenant, raw, raw, letter || raw));
+  }
+  if (!row && isPersonId(raw)) row = getLeadById(Number(raw));
   if (!row) row = getLeadByRef(raw);
   if (!row && isPersonId(raw)) row = getLeadByRef(raw);
   if (!row && letter && isLegacyRef(letter)) row = getLeadByLegacyRef(letter) || getLeadByRef(letter);
@@ -509,38 +515,46 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && url.pathname === '/api/purchase') {
       const body = await readBody(req);
       const tenant = tenantOf(req, url, body);
-      if (!tenant.meta.META_ACCESS_TOKEN && !tenant.meta.META_ACCESS_TOKEN_2) {
-        send(res, 503, { error: 'Falta META_ACCESS_TOKEN o META_ACCESS_TOKEN_2.' }, origin);
-        return;
-      }
-      const ref = pickSearchRef(asText(body.ref, 300)) || asText(body.ref, 20);
+      const ref = pickSearchRef(asText(body.ref, 300)) || unwrapDisplayCode(asText(body.ref, 40)) || asText(body.ref, 20);
       const monto = Number(body.monto);
       const force = Boolean(body.force);
+      if (!ref) {
+        send(res, 400, { error: 'Falta el código.' }, origin);
+        return;
+      }
+      if (!Number.isFinite(monto) || monto <= 0) {
+        send(res, 400, { error: 'Monto inválido.' }, origin);
+        return;
+      }
       const lead = findLead(ref, tenant.id);
       if (!lead) {
         console.log('[purchase] Código no encontrado');
-        send(res, 404, { error: 'Código no encontrado' }, origin);
-        return;
-      }
-      if (!(monto > 0)) {
-        send(res, 400, { error: 'Monto inválido.' }, origin);
+        send(res, 404, { error: 'Código no encontrado.' }, origin);
         return;
       }
       const alreadyHadPurchase = Boolean(lead.purchase_enviado);
       const code = publicCode(lead);
-      const eventId = 'purchase_' + code + '_' + Date.now().toString(36);
+      const eventId = purchaseEventId(code);
       const purchaseUserData = buildUserData(lead, {
         client_ip_address: storedOrRequest(lead.client_ip, requestVisitorIp(req)),
         client_user_agent: storedOrRequest(lead.user_agent, asText(req.headers['user-agent'], 400)),
       });
       const purchaseCustom = { currency: tenant.currency, value: Number(monto.toFixed(2)), order_id: code };
-      const meta = await sendMetaEvent(tenant.meta, {
-        event_name: 'Purchase',
+      const metaPayload = {
+        event_name: 'Purchase' as const,
         event_id: eventId,
         event_source_url: lead.landing_url || tenant.landingUrl,
         user_data: purchaseUserData,
         custom_data: purchaseCustom,
-      });
+      };
+      let meta;
+      try {
+        meta = await sendMetaEvent(tenant.meta, metaPayload);
+        if (!meta.pixel1_ok && !meta.pixel2_ok) meta = await sendMetaEvent(tenant.meta, metaPayload);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Error de Meta';
+        meta = { ok: false, pixel1_ok: false, pixel2_ok: false, error: message };
+      }
       const created = nowIso();
       const saleSaved = meta.pixel1_ok || meta.pixel2_ok;
       const metaStatus = meta.ok ? 'ok' : (saleSaved ? 'partial' : 'error');
@@ -559,16 +573,6 @@ const server = http.createServer(async (req, res) => {
         metaError,
         (force || alreadyHadPurchase) ? 1 : 0,
       );
-      if (!saleSaved) {
-        db.prepare('UPDATE leads SET updated_at = ?, purchase_meta_error = ? WHERE ref = ?').run(created, metaError, lead.ref);
-        console.log('[purchase] Purchase error pixel1_ok=false pixel2_ok=false :: ' + metaError);
-        send(res, 502, {
-          error: metaError || 'Error de Meta',
-          saved: false,
-          ...metaPixelPayload(meta),
-        }, origin);
-        return;
-      }
       db.prepare(`
         UPDATE leads SET
           updated_at = ?, status = 'PURCHASE', purchase_enviado = 1,
@@ -578,8 +582,9 @@ const server = http.createServer(async (req, res) => {
       `).run(created, eventId, monto, created, meta.events_received == null ? null : meta.events_received, metaError, lead.ref);
       console.log('[purchase] Purchase guardado pixel1_ok=' + String(meta.pixel1_ok) + ' pixel2_ok=' + String(meta.pixel2_ok) + (meta.ok ? '' : ' :: ' + metaError));
       send(res, 200, {
-        ok: meta.ok,
+        ok: true,
         saved: true,
+        meta_ok: meta.ok,
         ref: code,
         id: lead.id,
         a: Number(lead.ad) || 0,
