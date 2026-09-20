@@ -142,6 +142,14 @@ async function testBothPixelsFail(): Promise<void> {
   assert(result.pixel1_ok === false && result.pixel2_ok === false, 'ambos pixels en error');
 }
 
+async function testPurchaseKeepsUniqueOrderId(): Promise<void> {
+  const calls = mockFetch(okHandler);
+  await send('Purchase', 'purchase_order_1', { currency: 'PYG', value: 10000, order_id: 'purchase_order_1' });
+  const custom = eventFromCall(calls[0]).custom_data as Record<string, unknown>;
+  assert(custom.order_id === 'purchase_order_1', 'order_id único tiene que llegar a Meta');
+  assert(custom.currency === 'PYG', 'currency PYG');
+}
+
 async function testPixel1Token1FailUsesToken2(): Promise<void> {
   const calls = mockFetch((url) => {
     if (tokenFromUrl(url) === 'token-1') {
@@ -247,6 +255,7 @@ const tests = [
   ['token 1 falla y Pixel 1 usa token 2', testPixel1Token1FailUsesToken2],
   ['5xx reintenta una vez y sigue', testFiveXxRetriesOnceThenSucceeds],
   ['si fallan los dos, ok es false', testBothPixelsFail],
+  ['Purchase manda order_id único', testPurchaseKeepsUniqueOrderId],
 ] as const;
 
 let failed = 0;

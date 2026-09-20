@@ -524,17 +524,17 @@ export type SpendRow = {
   updated_at?: string;
 };
 
-export function spendWindow(range: StatsRange): { from: string | null; to: string | null; editDay: string } {
-  const today = arDateParts(new Date());
-  const todayStart = arMidnight(today.y, today.m, today.d);
+export function spendWindow(range: StatsRange, timeZone: string = AR_TZ): { from: string | null; to: string | null; editDay: string } {
+  const today = datePartsInTz(new Date(), timeZone);
+  const todayStart = midnightInTz(today.y, today.m, today.d, timeZone);
   const todayYmd = ymd(today.y, today.m, today.d);
-  const yest = arDateParts(addDays(todayStart, -1));
+  const yest = datePartsInTz(addDays(todayStart, -1), timeZone);
   const yestYmd = ymd(yest.y, yest.m, yest.d);
 
   if (range === 'today') return { from: todayYmd, to: todayYmd, editDay: todayYmd };
   if (range === 'yesterday') return { from: yestYmd, to: yestYmd, editDay: yestYmd };
   if (range === '7d') {
-    const from = arDateParts(addDays(todayStart, -6));
+    const from = datePartsInTz(addDays(todayStart, -6), timeZone);
     return { from: ymd(from.y, from.m, from.d), to: todayYmd, editDay: todayYmd };
   }
   return { from: null, to: null, editDay: todayYmd };
@@ -598,7 +598,7 @@ export function buildStats(
   }
 
   const arrived = leads.filter((row) => {
-    if (!row.lead_enviado) return false;
+    if (!row.lead_enviado && !row.lead_sent_at) return false;
     return inWindow(row.lead_sent_at || row.created_at, from, to);
   });
   const periodPurchases = purchases.filter((row) => inWindow(row.created_at, from, to));
@@ -731,6 +731,7 @@ export async function sendMetaEvent(
     event_source_url: string;
     user_data: Record<string, unknown>;
     custom_data: Record<string, unknown>;
+    event_time?: number;
   },
 ): Promise<MetaSendResult> {
   const brand = metaBrand(env);
@@ -744,7 +745,7 @@ export async function sendMetaEvent(
     data: [
       {
         event_name: input.event_name,
-        event_time: Math.floor(Date.now() / 1000),
+        event_time: Number.isFinite(input.event_time) ? Number(input.event_time) : Math.floor(Date.now() / 1000),
         event_id: input.event_id,
         action_source: 'website',
         event_source_url: input.event_source_url,
@@ -774,6 +775,7 @@ export async function sendMetaEvent(
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(8000),
       });
       const text = await response.text();
       let data: {

@@ -29,6 +29,7 @@ import {
   publicCode,
   unwrapDisplayCode,
   publicLead,
+  parseTenant,
   PURCHASE_LEAD_JOIN,
   purchaseEventId,
   isPersonId,
@@ -41,6 +42,7 @@ import {
   normalizeWhatsAppLine,
   type Attribution,
   type LeadRow,
+  type MetaSendResult,
   type TenantConfig,
   type TenantId,
 } from './shared.ts';
@@ -74,6 +76,8 @@ function openDatabase(): void {
   dbReady = true;
   dbError = '';
   console.log('[API] db ready');
+  setTimeout(() => { void retryStuckPurchases(); }, 4000);
+  setInterval(() => { void retryStuckPurchases(); }, 30000);
 }
 
 function tenantOf(req: http.IncomingMessage, url: URL, body?: Record<string, unknown>): TenantConfig {
@@ -345,6 +349,82 @@ function buildUserData(lead: LeadRow, extras: { client_ip_address?: string; clie
   return userData;
 }
 
+function purchaseMetaFields(meta: MetaSendResult): { status: string; error: string | null; received: number | null } {
+  const saved = meta.pixel1_ok || meta.pixel2_ok;
+  return {
+    status: meta.ok ? 'ok' : (saved ? 'partial' : 'error'),
+    error: meta.ok ? null : metaFailureMessage(meta),
+    received: meta.events_received == null ? null : meta.events_received,
+  };
+}
+
+function writePurchaseMeta(eventId: string, leadRef: string, meta: MetaSendResult): { status: string; error: string | null; received: number | null } {
+  const fields = purchaseMetaFields(meta);
+  db.prepare('UPDATE purchases SET events_received = ?, meta_status = ?, meta_error = ? WHERE event_id = ?').run(
+    fields.received, fields.status, fields.error, eventId,
+  );
+  db.prepare('UPDATE leads SET purchase_events_received = ?, purchase_meta_error = ? WHERE ref = ?').run(
+    fields.received, fields.error, leadRef,
+  );
+  return fields;
+}
+
+async function sendPurchaseMeta(tenant: TenantConfig, lead: LeadRow, monto: number, eventId: string, eventTime?: number): Promise<MetaSendResult> {
+  const code = publicCode(lead);
+  const payload = {
+    event_name: 'Purchase' as const,
+    event_id: eventId,
+    event_time: eventTime,
+    event_source_url: lead.landing_url || tenant.landingUrl,
+    user_data: buildUserData(lead, {
+      client_ip_address: storedOrRequest(lead.client_ip, ''),
+      client_user_agent: storedOrRequest(lead.user_agent, ''),
+    }),
+    custom_data: { currency: tenant.currency, value: Number(monto.toFixed(2)), order_id: eventId },
+  };
+  try {
+    let meta = await sendMetaEvent(tenant.meta, payload);
+    if (!meta.pixel1_ok && !meta.pixel2_ok) meta = await sendMetaEvent(tenant.meta, payload);
+    return meta;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Error de Meta';
+    return { ok: false, pixel1_ok: false, pixel2_ok: false, error: message };
+  }
+}
+
+let retryingPurchases = false;
+async function retryStuckPurchases(): Promise<void> {
+  if (!dbReady || retryingPurchases) return;
+  retryingPurchases = true;
+  try {
+    const cutoff = new Date(Date.now() - 6 * 24 * 60 * 60 * 1000).toISOString();
+    const stale = new Date(Date.now() - 25000).toISOString();
+    const rows = db.prepare(`
+      SELECT p.event_id, p.ref, p.monto, p.created_at, l.tenant, l.ref AS lead_ref
+      ${PURCHASE_LEAD_JOIN}
+      WHERE p.meta_status IN ('pending', 'error')
+        AND p.created_at >= ?
+        AND (p.meta_status != 'pending' OR p.created_at <= ?)
+      GROUP BY p.id
+      LIMIT 10
+    `).all(cutoff, stale) as Array<{ event_id: string; ref: string; monto: number; created_at: string; tenant: string; lead_ref: string }>;
+    for (const row of rows) {
+      const tenantId = parseTenant(row.tenant) || 'royal';
+      const tenant = tenantConfig(tenantId, process.env);
+      const lead = findLead(row.ref, tenant.id);
+      if (!lead) continue;
+      const eventTime = Math.floor(new Date(row.created_at).getTime() / 1000);
+      const meta = await sendPurchaseMeta(tenant, lead, Number(row.monto), row.event_id, eventTime);
+      writePurchaseMeta(row.event_id, lead.ref, meta);
+      console.log('[purchase] reintento', row.event_id, meta.ok ? 'ok' : metaFailureMessage(meta));
+    }
+  } catch (error) {
+    console.log('[purchase] reintento falló', error instanceof Error ? error.message : error);
+  } finally {
+    retryingPurchases = false;
+  }
+}
+
 const server = http.createServer(async (req, res) => {
   const origin = allowedOrigin(req);
   const url = new URL(req.url || '/', 'http://localhost');
@@ -568,30 +648,7 @@ const server = http.createServer(async (req, res) => {
       const alreadyHadPurchase = Boolean(lead.purchase_enviado);
       const code = publicCode(lead);
       const eventId = purchaseEventId(code);
-      const purchaseUserData = buildUserData(lead, {
-        client_ip_address: storedOrRequest(lead.client_ip, requestVisitorIp(req)),
-        client_user_agent: storedOrRequest(lead.user_agent, asText(req.headers['user-agent'], 400)),
-      });
-      const purchaseCustom = { currency: tenant.currency, value: Number(monto.toFixed(2)), order_id: code };
-      const metaPayload = {
-        event_name: 'Purchase' as const,
-        event_id: eventId,
-        event_source_url: lead.landing_url || tenant.landingUrl,
-        user_data: purchaseUserData,
-        custom_data: purchaseCustom,
-      };
-      let meta;
-      try {
-        meta = await sendMetaEvent(tenant.meta, metaPayload);
-        if (!meta.pixel1_ok && !meta.pixel2_ok) meta = await sendMetaEvent(tenant.meta, metaPayload);
-      } catch (err) {
-        const message = err instanceof Error ? err.message : 'Error de Meta';
-        meta = { ok: false, pixel1_ok: false, pixel2_ok: false, error: message };
-      }
       const created = nowIso();
-      const saleSaved = meta.pixel1_ok || meta.pixel2_ok;
-      const metaStatus = meta.ok ? 'ok' : (saleSaved ? 'partial' : 'error');
-      const metaError = meta.ok ? null : metaFailureMessage(meta);
       db.prepare(`
         INSERT INTO purchases (
           ref, monto, event_id, created_at,
@@ -601,19 +658,38 @@ const server = http.createServer(async (req, res) => {
       `).run(
         code, monto, eventId, created,
         lead.campaign_id, lead.campaign_name, lead.adset_id, lead.adset_name, lead.ad_id, lead.ad_name,
-        meta.events_received == null ? null : meta.events_received,
-        metaStatus,
-        metaError,
+        null,
+        'pending',
+        null,
         (force || alreadyHadPurchase) ? 1 : 0,
       );
       db.prepare(`
         UPDATE leads SET
           updated_at = ?, status = 'PURCHASE', purchase_enviado = 1,
-          purchase_event_id = ?, monto_purchase = ?, fecha_purchase = ?,
-          purchase_events_received = ?, purchase_meta_error = ?
+          purchase_event_id = ?, monto_purchase = ?, fecha_purchase = ?
         WHERE ref = ?
-      `).run(created, eventId, monto, created, meta.events_received == null ? null : meta.events_received, metaError, lead.ref);
-      console.log('[purchase] Purchase guardado pixel1_ok=' + String(meta.pixel1_ok) + ' pixel2_ok=' + String(meta.pixel2_ok) + (meta.ok ? '' : ' :: ' + metaError));
+      `).run(created, eventId, monto, created, lead.ref);
+      const purchaseUserData = buildUserData(lead, {
+        client_ip_address: storedOrRequest(lead.client_ip, requestVisitorIp(req)),
+        client_user_agent: storedOrRequest(lead.user_agent, asText(req.headers['user-agent'], 400)),
+      });
+      const metaPayload = {
+        event_name: 'Purchase' as const,
+        event_id: eventId,
+        event_source_url: lead.landing_url || tenant.landingUrl,
+        user_data: purchaseUserData,
+        custom_data: { currency: tenant.currency, value: Number(monto.toFixed(2)), order_id: eventId },
+      };
+      let meta: MetaSendResult;
+      try {
+        meta = await sendMetaEvent(tenant.meta, metaPayload);
+        if (!meta.pixel1_ok && !meta.pixel2_ok) meta = await sendMetaEvent(tenant.meta, metaPayload);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Error de Meta';
+        meta = { ok: false, pixel1_ok: false, pixel2_ok: false, error: message };
+      }
+      const fields = writePurchaseMeta(eventId, lead.ref, meta);
+      console.log('[purchase] Purchase guardado pixel1_ok=' + String(meta.pixel1_ok) + ' pixel2_ok=' + String(meta.pixel2_ok) + (meta.ok ? '' : ' :: ' + fields.error));
       send(res, 200, {
         ok: true,
         saved: true,
@@ -634,7 +710,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && url.pathname === '/api/spend') {
       const tenant = tenantOf(req, url);
       const range = parseStatsRange(url.searchParams.get('range'));
-      const window = spendWindow(range);
+      const window = spendWindow(range, statsTimezone(tenant.id));
       const rows = window.from && window.to
         ? db.prepare('SELECT day, usd, fx, updated_at FROM ad_spend WHERE tenant = ? AND day >= ? AND day <= ? ORDER BY day').all(tenant.id, window.from, window.to)
         : db.prepare('SELECT day, usd, fx, updated_at FROM ad_spend WHERE tenant = ? ORDER BY day').all(tenant.id);
@@ -656,7 +732,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && url.pathname === '/api/spend') {
       const body = await readBody(req);
       const tenant = tenantOf(req, url, body);
-      const window = spendWindow(parseStatsRange(body.range));
+      const window = spendWindow(parseStatsRange(body.range), statsTimezone(tenant.id));
       const day = isYmd(body.day) ? String(body.day) : window.editDay;
       const usd = Number(body.usd);
       const fx = Number(body.fx);
