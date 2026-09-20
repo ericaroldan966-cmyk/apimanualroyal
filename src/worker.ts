@@ -191,8 +191,21 @@ async function findLead(db: D1Database, code: string, tenant?: TenantId): Promis
   return row;
 }
 
-async function insertLead(db: D1Database, attr: Attribution, status: string, tenant: TenantId): Promise<LeadRow> {
+async function insertLead(db: D1Database, attr: Attribution, status: string, tenant: TenantId, ip = '', userAgent = ''): Promise<LeadRow> {
   const created = nowIso();
+  const since = new Date(Date.now() - 15000).toISOString();
+  let twin: LeadRow | null = null;
+  if (attr.fbp) {
+    twin = await db.prepare(
+      'SELECT * FROM leads WHERE tenant = ? AND fbp = ? AND created_at >= ? ORDER BY rowid DESC LIMIT 1',
+    ).bind(tenant, attr.fbp, since).first() as LeadRow | null;
+  }
+  if (!twin && ip && userAgent) {
+    twin = await db.prepare(
+      'SELECT * FROM leads WHERE tenant = ? AND client_ip = ? AND user_agent = ? AND created_at >= ? ORDER BY rowid DESC LIMIT 1',
+    ).bind(tenant, ip, userAgent, since).first() as LeadRow | null;
+  }
+  if (twin) return updateAttribution(db, twin, mergeAttribution(twin, attr));
   const temp = 'TMP-' + makeToken().slice(0, 16);
   const result = await db.prepare(`
     INSERT INTO leads (
@@ -248,7 +261,7 @@ async function attachLegacyRef(db: D1Database, row: LeadRow, letter: string): Pr
   return await getLeadById(db, Number(row.id)) || row;
 }
 
-async function upsertVisit(db: D1Database, requestedRef: unknown, incoming: Attribution, tenant: TenantId): Promise<LeadRow> {
+async function upsertVisit(db: D1Database, requestedRef: unknown, incoming: Attribution, tenant: TenantId, ip = '', userAgent = ''): Promise<LeadRow> {
   const personId = pickPersonId(String(requestedRef || ''));
   if (personId) {
     const existing = await findLead(db, personId, tenant);
@@ -266,11 +279,11 @@ async function upsertVisit(db: D1Database, requestedRef: unknown, incoming: Attr
       console.log(refLog(tenant), 'persisted', publicCode(updated), requested);
       return updated;
     }
-    const created = await attachLegacyRef(db, await insertLead(db, incoming, 'VISIT', tenant), requested);
+    const created = await attachLegacyRef(db, await insertLead(db, incoming, 'VISIT', tenant, ip, userAgent), requested);
     console.log(refLog(tenant), 'created', publicCode(created), requested);
     return created;
   }
-  const row = await insertLead(db, incoming, 'VISIT', tenant);
+  const row = await insertLead(db, incoming, 'VISIT', tenant, ip, userAgent);
   console.log(refLog(tenant), 'created', publicCode(row));
   return row;
 }
@@ -355,7 +368,7 @@ export default {
         const ip = clientIp(request);
         const userAgent = asText(request.headers.get('User-Agent'), 400);
         const incoming = attributionFromBody({ ...body, a: body.a ?? body.ad ?? url.searchParams.get('a') });
-        const lead = await persistVisitorContext(env.DB, await upsertVisit(env.DB, body.ref, incoming, tenant.id), ip, userAgent);
+        const lead = await persistVisitorContext(env.DB, await upsertVisit(env.DB, body.ref, incoming, tenant.id, ip, userAgent), ip, userAgent);
         const code = publicCode(lead);
         console.log(refLog(tenant.id), 'returned to landing', code);
         void sendMetaEvent(tenant.meta, {
@@ -381,7 +394,7 @@ export default {
         const ip = clientIp(request);
         const userAgent = asText(request.headers.get('User-Agent'), 400);
         const incoming = attributionFromBody({ ...body, a: body.a ?? body.ad ?? url.searchParams.get('a') });
-        const lead = await persistVisitorContext(env.DB, await upsertVisit(env.DB, body.ref, incoming, tenant.id), ip, userAgent);
+        const lead = await persistVisitorContext(env.DB, await upsertVisit(env.DB, body.ref, incoming, tenant.id, ip, userAgent), ip, userAgent);
         const code = publicCode(lead);
         const eventId = asText(body.event_id, 80) || ('lead_' + code);
         const visitorData = await buildUserData(lead, {
@@ -510,6 +523,20 @@ export default {
             purchase_event_id = ?, monto_purchase = ?, fecha_purchase = ?
           WHERE ref = ?
         `).bind(created, eventId, monto, created, lead.ref).run();
+        const updated = await getLeadById(env.DB, Number(lead.id));
+        const response = json(200, {
+          ok: true,
+          saved: true,
+          meta_ok: true,
+          pixel1_ok: true,
+          ref: code,
+          id: lead.id,
+          a: Number(lead.ad) || 0,
+          monto,
+          event_id: eventId,
+          fecha_purchase: created,
+          lead: publicLead(updated),
+        }, origin);
         const purchaseUserData = await buildUserData(lead, {
           client_ip_address: storedOrRequest(lead.client_ip, clientIp(request)),
           client_user_agent: storedOrRequest(lead.user_agent, asText(request.headers.get('User-Agent'), 400)),
@@ -521,39 +548,27 @@ export default {
           user_data: purchaseUserData,
           custom_data: purchaseCustomData(tenant.currency, monto, eventId),
         };
-        let meta: MetaSendResult;
-        try {
-          meta = await sendMetaEvent(tenant.meta, metaPayload);
-          if (!meta.pixel1_ok && !meta.pixel2_ok) meta = await sendMetaEvent(tenant.meta, metaPayload);
-        } catch (err) {
-          const message = err instanceof Error ? err.message : 'Error de Meta';
-          meta = { ok: false, pixel1_ok: false, pixel2_ok: false, error: message };
-        }
-        const saleSaved = meta.pixel1_ok || meta.pixel2_ok;
-        const metaStatus = meta.ok ? 'ok' : (saleSaved ? 'partial' : 'error');
-        const metaError = meta.ok ? null : metaFailureMessage(meta);
-        await env.DB.prepare('UPDATE purchases SET events_received = ?, meta_status = ?, meta_error = ? WHERE event_id = ?').bind(
-          meta.events_received == null ? null : meta.events_received, metaStatus, metaError, eventId,
-        ).run();
-        await env.DB.prepare('UPDATE leads SET purchase_events_received = ?, purchase_meta_error = ? WHERE ref = ?').bind(
-          meta.events_received == null ? null : meta.events_received, metaError, lead.ref,
-        ).run();
-        console.log('[purchase] Purchase guardado pixel1_ok=' + String(meta.pixel1_ok) + ' pixel2_ok=' + String(meta.pixel2_ok) + (meta.ok ? '' : ' :: ' + metaError));
-        const updated = await getLeadById(env.DB, Number(lead.id));
-        return json(200, {
-          ok: true,
-          saved: true,
-          meta_ok: meta.ok,
-          ref: code,
-          id: lead.id,
-          a: Number(lead.ad) || 0,
-          monto,
-          event_id: eventId,
-          fecha_purchase: created,
-          events_received: meta.events_received,
-          ...metaPixelPayload(meta),
-          lead: publicLead(updated),
-        }, origin);
+        void (async () => {
+          let meta: MetaSendResult;
+          try {
+            meta = await sendMetaEvent(tenant.meta, metaPayload);
+            if (!meta.pixel1_ok && !meta.pixel2_ok) meta = await sendMetaEvent(tenant.meta, metaPayload);
+          } catch (err) {
+            const message = err instanceof Error ? err.message : 'Error de Meta';
+            meta = { ok: false, pixel1_ok: false, pixel2_ok: false, error: message };
+          }
+          const saleSaved = meta.pixel1_ok || meta.pixel2_ok;
+          const metaStatus = meta.ok ? 'ok' : (saleSaved ? 'partial' : 'error');
+          const metaError = meta.ok ? null : metaFailureMessage(meta);
+          await env.DB.prepare('UPDATE purchases SET events_received = ?, meta_status = ?, meta_error = ? WHERE event_id = ?').bind(
+            meta.events_received == null ? null : meta.events_received, metaStatus, metaError, eventId,
+          ).run();
+          await env.DB.prepare('UPDATE leads SET purchase_events_received = ?, purchase_meta_error = ? WHERE ref = ?').bind(
+            meta.events_received == null ? null : meta.events_received, metaError, lead.ref,
+          ).run();
+          console.log('[purchase] Purchase guardado pixel1_ok=' + String(meta.pixel1_ok) + ' pixel2_ok=' + String(meta.pixel2_ok) + (meta.ok ? '' : ' :: ' + metaError));
+        })();
+        return response;
       }
 
       if (request.method === 'GET' && url.pathname === '/api/spend') {

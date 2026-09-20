@@ -274,7 +274,8 @@ export function publicCode(row: { id?: number | null; ref?: string } | null | un
 function glueRefText(value: string): string {
   return String(value || '')
     .toUpperCase()
-    .replace(/[\u2011\u2060]/g, '-')
+    .replace(/[\u200B-\u200D\u2060\uFEFF]/g, '')
+    .replace(/\u2011/g, '-')
     .replace(/[\s\u00A0]+/g, '');
 }
 

@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { MIGRATIONS_DIR, runMigrations, tableColumns } from './migrate.ts';
-import { normalizeWhatsAppLine } from './shared.ts';
+import { normalizeWhatsAppLine, pickSearchRef, unwrapDisplayCode } from './shared.ts';
 
 const failures: string[] = [];
 function assert(condition: unknown, message: string): void {
@@ -54,6 +54,9 @@ assert(normalizeWhatsAppLine('5491125689335') === '5491125689335', 'AR line stay
 assert(normalizeWhatsAppLine('91178916874') === '5491178916874', 'AR mobile without 54 gets country code');
 assert(normalizeWhatsAppLine('+595 992 132731') === '595992132731', 'PY line keeps 595');
 assert(!normalizeWhatsAppLine('12345'), 'short junk is not a WhatsApp line');
+assert(pickSearchRef('REF-47') === '47', 'REF-47 is the person id');
+assert(pickSearchRef('Hola, quiero más información. REF-\u206047 quiero mi beneficio') === '47', 'WhatsApp word-joiner REF still searches');
+assert(unwrapDisplayCode('REF-\u206047') === '47', 'unwrap drops the WhatsApp word joiner');
 
 const second = runMigrations(db);
 assert(second.join(',') === first.join(','), 'a second boot should not re-run migrations');

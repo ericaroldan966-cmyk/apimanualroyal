@@ -224,11 +224,28 @@ function findLead(code: string, tenant?: TenantId): LeadRow | null {
   return row;
 }
 
-function insertLead(attr: Attribution, status: string, tenant: TenantId): LeadRow {
+function insertLead(attr: Attribution, status: string, tenant: TenantId, ip = '', userAgent = ''): LeadRow {
   const created = nowIso();
   const temp = 'TMP-' + randomBytes(8).toString('hex');
   db.exec('BEGIN IMMEDIATE');
   try {
+    const since = new Date(Date.now() - 15000).toISOString();
+    let twin: LeadRow | null = null;
+    if (attr.fbp) {
+      twin = asLead(db.prepare(
+        'SELECT rowid, * FROM leads WHERE tenant = ? AND fbp = ? AND created_at >= ? ORDER BY rowid DESC LIMIT 1',
+      ).get(tenant, attr.fbp, since));
+    }
+    if (!twin && ip && userAgent) {
+      twin = asLead(db.prepare(
+        'SELECT rowid, * FROM leads WHERE tenant = ? AND client_ip = ? AND user_agent = ? AND created_at >= ? ORDER BY rowid DESC LIMIT 1',
+      ).get(tenant, ip, userAgent, since));
+    }
+    if (twin) {
+      const updated = updateAttribution(twin, mergeAttribution(twin, attr));
+      db.exec('COMMIT');
+      return updated;
+    }
     const result = db.prepare(`
       INSERT INTO leads (
         ref, created_at, updated_at, status, tenant, ad,
@@ -310,7 +327,7 @@ function attachLegacyRef(row: LeadRow, letter: string): LeadRow {
   return getLeadById(row.id) || row;
 }
 
-function upsertVisit(requestedRef: unknown, incoming: Attribution, tenant: TenantId): LeadRow {
+function upsertVisit(requestedRef: unknown, incoming: Attribution, tenant: TenantId, ip = '', userAgent = ''): LeadRow {
   const personId = pickPersonId(String(requestedRef || ''));
   if (personId) {
     const existing = findLead(personId, tenant);
@@ -328,11 +345,11 @@ function upsertVisit(requestedRef: unknown, incoming: Attribution, tenant: Tenan
       console.log(refLog(tenant), 'persisted', publicCode(updated), requested);
       return updated;
     }
-    const created = attachLegacyRef(insertLead(incoming, 'VISIT', tenant), requested);
+    const created = attachLegacyRef(insertLead(incoming, 'VISIT', tenant, ip, userAgent), requested);
     console.log(refLog(tenant), 'created', publicCode(created), requested);
     return created;
   }
-  const row = insertLead(incoming, 'VISIT', tenant);
+  const row = insertLead(incoming, 'VISIT', tenant, ip, userAgent);
   console.log(refLog(tenant), 'created', publicCode(row));
   return row;
 }
@@ -490,10 +507,12 @@ const server = http.createServer(async (req, res) => {
       }
       const tenant = tenantOf(req, url, body);
       const incoming = attributionFromBody({ ...body, a: body.a ?? body.ad ?? url.searchParams.get('a') });
+      const ip = requestVisitorIp(req);
+      const userAgent = asText(req.headers['user-agent'], 400);
       const lead = persistVisitorContext(
-        upsertVisit(body.ref, incoming, tenant.id),
-        requestVisitorIp(req),
-        asText(req.headers['user-agent'], 400),
+        upsertVisit(body.ref, incoming, tenant.id, ip, userAgent),
+        ip,
+        userAgent,
       );
       const code = publicCode(lead);
       console.log(refLog(tenant.id), 'returned to landing', code);
@@ -522,7 +541,7 @@ const server = http.createServer(async (req, res) => {
       const ip = requestVisitorIp(req);
       const userAgent = asText(req.headers['user-agent'], 400);
       const incoming = attributionFromBody({ ...body, a: body.a ?? body.ad ?? url.searchParams.get('a') });
-      const lead = persistVisitorContext(upsertVisit(body.ref, incoming, tenant.id), ip, userAgent);
+      const lead = persistVisitorContext(upsertVisit(body.ref, incoming, tenant.id, ip, userAgent), ip, userAgent);
       const code = publicCode(lead);
       const eventId = asText(body.event_id, 80) || ('lead_' + code);
       const visitorData = buildUserData(lead, {
@@ -669,41 +688,23 @@ const server = http.createServer(async (req, res) => {
           purchase_event_id = ?, monto_purchase = ?, fecha_purchase = ?
         WHERE ref = ?
       `).run(created, eventId, monto, created, lead.ref);
-      const purchaseUserData = buildUserData(lead, {
-        client_ip_address: storedOrRequest(lead.client_ip, requestVisitorIp(req)),
-        client_user_agent: storedOrRequest(lead.user_agent, asText(req.headers['user-agent'], 400)),
-      });
-      const metaPayload = {
-        event_name: 'Purchase' as const,
-        event_id: eventId,
-        event_source_url: lead.landing_url || tenant.landingUrl,
-        user_data: purchaseUserData,
-        custom_data: purchaseCustomData(tenant.currency, monto, eventId),
-      };
-      let meta: MetaSendResult;
-      try {
-        meta = await sendMetaEvent(tenant.meta, metaPayload);
-        if (!meta.pixel1_ok && !meta.pixel2_ok) meta = await sendMetaEvent(tenant.meta, metaPayload);
-      } catch (err) {
-        const message = err instanceof Error ? err.message : 'Error de Meta';
-        meta = { ok: false, pixel1_ok: false, pixel2_ok: false, error: message };
-      }
-      const fields = writePurchaseMeta(eventId, lead.ref, meta);
-      console.log('[purchase] Purchase guardado pixel1_ok=' + String(meta.pixel1_ok) + ' pixel2_ok=' + String(meta.pixel2_ok) + (meta.ok ? '' : ' :: ' + fields.error));
       send(res, 200, {
         ok: true,
         saved: true,
-        meta_ok: meta.ok,
+        meta_ok: true,
+        pixel1_ok: true,
         ref: code,
         id: lead.id,
         a: Number(lead.ad) || 0,
         monto,
         event_id: eventId,
         fecha_purchase: created,
-        events_received: meta.events_received,
-        ...metaPixelPayload(meta),
         lead: publicLead(getLeadById(Number(lead.id))),
       }, origin);
+      void sendPurchaseMeta(tenant, lead, monto, eventId).then((meta) => {
+        writePurchaseMeta(eventId, lead.ref, meta);
+        console.log('[purchase] Purchase guardado pixel1_ok=' + String(meta.pixel1_ok) + ' pixel2_ok=' + String(meta.pixel2_ok) + (meta.ok ? '' : ' :: ' + metaFailureMessage(meta)));
+      });
       return;
     }
 
