@@ -710,6 +710,18 @@ export default {
         return json(200, { ok: true, line: publicWhatsAppLine(updated) }, origin);
       }
 
+      if (request.method === 'DELETE' && url.pathname === '/api/whatsapp-lines') {
+        if (!env.DB) return json(503, { error: 'Base D1 no conectada.' }, origin);
+        const body = await readJson(request);
+        const tenant = tenantOf(request, env, body);
+        const id = Number(body.id || url.searchParams.get('id'));
+        if (!Number.isInteger(id) || id <= 0) return json(400, { error: 'Falta el id de la línea.' }, origin);
+        const row = await env.DB.prepare('SELECT * FROM whatsapp_lines WHERE id = ? AND tenant = ?').bind(id, tenant.id).first() as { id: number } | null;
+        if (!row) return json(404, { error: 'Línea no encontrada.' }, origin);
+        await env.DB.prepare('DELETE FROM whatsapp_lines WHERE id = ? AND tenant = ?').bind(id, tenant.id).run();
+        return json(200, { ok: true }, origin);
+      }
+
       return json(404, { error: 'Ruta no encontrada.' }, origin);
     } catch (err) {
       console.log('[api] Error interno', err instanceof Error ? err.message : err);

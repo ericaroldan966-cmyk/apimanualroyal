@@ -854,6 +854,26 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (req.method === 'DELETE' && url.pathname === '/api/whatsapp-lines') {
+      const body = await readBody(req);
+      const tenant = tenantOf(req, url, body);
+      const id = Number(body.id || url.searchParams.get('id'));
+      if (!Number.isInteger(id) || id <= 0) {
+        send(res, 400, { error: 'Falta el id de la línea.' }, origin);
+        return;
+      }
+      const row = db.prepare('SELECT * FROM whatsapp_lines WHERE id = ? AND tenant = ?').get(id, tenant.id) as
+        | { id: number }
+        | undefined;
+      if (!row) {
+        send(res, 404, { error: 'Línea no encontrada.' }, origin);
+        return;
+      }
+      db.prepare('DELETE FROM whatsapp_lines WHERE id = ? AND tenant = ?').run(id, tenant.id);
+      send(res, 200, { ok: true }, origin);
+      return;
+    }
+
     const leadMatch = url.pathname.match(/^\/api\/lead\/([^/]+)$/);
     if (req.method === 'GET' && leadMatch) {
       const tenant = tenantOf(req, url);
