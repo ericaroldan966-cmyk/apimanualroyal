@@ -691,6 +691,14 @@ export function purchaseEventId(code: string): string {
   return 'purchase_' + code + '_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
 }
 
+export function purchaseCustomData(currency: string, monto: number, eventId: string): { currency: string; value: number; order_id: string } {
+  return {
+    currency,
+    value: Number(Number(monto).toFixed(2)),
+    order_id: eventId,
+  };
+}
+
 export function pageViewEventId(ref: string): string {
   return 'pv_' + ref;
 }

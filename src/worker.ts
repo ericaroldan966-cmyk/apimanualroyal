@@ -24,6 +24,7 @@ import {
   publicLead,
   PURCHASE_LEAD_JOIN,
   purchaseEventId,
+  purchaseCustomData,
   isPersonId,
   resolveTenantId,
   sendMetaEvent,
@@ -518,7 +519,7 @@ export default {
           event_id: eventId,
           event_source_url: lead.landing_url || tenant.landingUrl,
           user_data: purchaseUserData,
-          custom_data: { currency: tenant.currency, value: Number(monto.toFixed(2)), order_id: eventId },
+          custom_data: purchaseCustomData(tenant.currency, monto, eventId),
         };
         let meta: MetaSendResult;
         try {

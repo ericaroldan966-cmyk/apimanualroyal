@@ -1,4 +1,4 @@
-import { sendMetaEvent, type MetaEnv } from './shared.ts';
+import { sendMetaEvent, purchaseCustomData, purchaseEventId, type MetaEnv } from './shared.ts';
 
 type Call = { url: string; body: Record<string, unknown> };
 
@@ -63,7 +63,7 @@ async function testDualSendAllEvents(): Promise<void> {
     ['PageView', 'pv_REF-AAAAAA', {}],
     ['Lead', 'lead_REF-AAAAAA', {}],
     ['InitiateCheckout', 'ic_REF-AAAAAA', { currency: 'ARS', value: 10000 }],
-    ['Purchase', 'purchase_REF-AAAAAA', { currency: 'ARS', value: 10000, order_id: 'REF-AAAAAA' }],
+    ['Purchase', 'purchase_REF-AAAAAA', { currency: 'ARS', value: 10000, order_id: 'purchase_REF-AAAAAA' }],
   ] as const;
 
   for (const [name, eventId, custom] of events) {
@@ -148,6 +148,17 @@ async function testPurchaseKeepsUniqueOrderId(): Promise<void> {
   const custom = eventFromCall(calls[0]).custom_data as Record<string, unknown>;
   assert(custom.order_id === 'purchase_order_1', 'order_id único tiene que llegar a Meta');
   assert(custom.currency === 'PYG', 'currency PYG');
+}
+
+async function testPurchaseCustomDataNeverUsesPersonCode(): Promise<void> {
+  const eventId = purchaseEventId('47');
+  const royal = purchaseCustomData('ARS', 10000, eventId);
+  const kova = purchaseCustomData('ARS', 5000, eventId);
+  const paraguay = purchaseCustomData('PYG', 100000, eventId);
+  assert(royal.order_id === eventId && kova.order_id === eventId && paraguay.order_id === eventId, 'todas las marcas usan el event_id');
+  assert(royal.order_id !== '47' && !/^\d+$/.test(royal.order_id), 'order_id no es el código de persona');
+  const second = purchaseEventId('47');
+  assert(second !== eventId, 'cada carga tiene un event_id distinto');
 }
 
 async function testPixel1Token1FailUsesToken2(): Promise<void> {
@@ -256,6 +267,7 @@ const tests = [
   ['5xx reintenta una vez y sigue', testFiveXxRetriesOnceThenSucceeds],
   ['si fallan los dos, ok es false', testBothPixelsFail],
   ['Purchase manda order_id único', testPurchaseKeepsUniqueOrderId],
+  ['order_id de compra no es el código de persona', testPurchaseCustomDataNeverUsesPersonCode],
 ] as const;
 
 let failed = 0;

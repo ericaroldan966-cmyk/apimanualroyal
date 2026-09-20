@@ -32,6 +32,7 @@ import {
   parseTenant,
   PURCHASE_LEAD_JOIN,
   purchaseEventId,
+  purchaseCustomData,
   isPersonId,
   resolveTenantId,
   sendMetaEvent,
@@ -370,7 +371,6 @@ function writePurchaseMeta(eventId: string, leadRef: string, meta: MetaSendResul
 }
 
 async function sendPurchaseMeta(tenant: TenantConfig, lead: LeadRow, monto: number, eventId: string, eventTime?: number): Promise<MetaSendResult> {
-  const code = publicCode(lead);
   const payload = {
     event_name: 'Purchase' as const,
     event_id: eventId,
@@ -380,7 +380,7 @@ async function sendPurchaseMeta(tenant: TenantConfig, lead: LeadRow, monto: numb
       client_ip_address: storedOrRequest(lead.client_ip, ''),
       client_user_agent: storedOrRequest(lead.user_agent, ''),
     }),
-    custom_data: { currency: tenant.currency, value: Number(monto.toFixed(2)), order_id: eventId },
+    custom_data: purchaseCustomData(tenant.currency, monto, eventId),
   };
   try {
     let meta = await sendMetaEvent(tenant.meta, payload);
@@ -678,7 +678,7 @@ const server = http.createServer(async (req, res) => {
         event_id: eventId,
         event_source_url: lead.landing_url || tenant.landingUrl,
         user_data: purchaseUserData,
-        custom_data: { currency: tenant.currency, value: Number(monto.toFixed(2)), order_id: eventId },
+        custom_data: purchaseCustomData(tenant.currency, monto, eventId),
       };
       let meta: MetaSendResult;
       try {
