@@ -82,3 +82,15 @@ CREATE INDEX IF NOT EXISTS idx_purchases_ref ON purchases(ref);
 CREATE INDEX IF NOT EXISTS idx_purchases_created ON purchases(created_at);
 CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
 CREATE INDEX IF NOT EXISTS idx_ad_spend_day ON ad_spend(day);
+
+CREATE TABLE IF NOT EXISTS whatsapp_lines (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  tenant TEXT NOT NULL,
+  number TEXT NOT NULL,
+  active INTEGER NOT NULL DEFAULT 1,
+  label TEXT,
+  created_at TEXT NOT NULL,
+  UNIQUE (tenant, number)
+);
+CREATE INDEX IF NOT EXISTS idx_whatsapp_lines_tenant ON whatsapp_lines(tenant);
+CREATE INDEX IF NOT EXISTS idx_whatsapp_lines_tenant_active ON whatsapp_lines(tenant, active);

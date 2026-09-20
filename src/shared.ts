@@ -235,7 +235,7 @@ export function corsHeaders(origin: string): Record<string, string> {
   return {
     'Access-Control-Allow-Origin': origin || '*',
     'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Purchase-Key, X-Tenant',
-    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+    'Access-Control-Allow-Methods': 'GET, POST, PATCH, OPTIONS',
   };
 }
 
@@ -251,6 +251,17 @@ export function normalizePhone(value: unknown): string {
     digits = '54' + digits.replace(/^0/, '');
   }
   return digits;
+}
+
+export function normalizeWhatsAppLine(value: unknown): string {
+  let digits = String(value || '').replace(/\D/g, '');
+  if (!digits) return '';
+  if (digits.startsWith('00')) digits = digits.slice(2);
+  if (digits.startsWith('549') && digits.length >= 12 && digits.length <= 15) return digits;
+  if (digits.startsWith('595') && digits.length >= 11 && digits.length <= 15) return digits;
+  if (digits.length === 10 && digits.startsWith('11')) return '549' + digits;
+  if (digits.length === 9 && digits.startsWith('9')) return '595' + digits;
+  return '';
 }
 
 export function publicCode(row: { id?: number | null; ref?: string } | null | undefined): string {

@@ -31,6 +31,7 @@ import {
   tenantConfig,
   metaFailureMessage,
   metaPixelPayload,
+  normalizeWhatsAppLine,
   type Attribution,
   type MetaSendResult,
   type LeadRow,
@@ -86,6 +87,17 @@ function json(status: number, payload: unknown, origin: string): Response {
       ...corsHeaders(origin),
     },
   });
+}
+
+function publicWhatsAppLine(row: { id?: number; number?: string; active?: number | boolean; label?: string | null; created_at?: string } | null) {
+  if (!row) return null;
+  return {
+    id: Number(row.id) || 0,
+    number: String(row.number || ''),
+    active: Boolean(row.active),
+    label: String(row.label || ''),
+    created_at: String(row.created_at || ''),
+  };
 }
 
 function makeToken(): string {
@@ -644,6 +656,53 @@ export default {
         const row = await findLead(env.DB, decodeURIComponent(leadMatch[1]), tenant.id);
         if (!row) return json(404, { error: 'Código no encontrado.' }, origin);
         return json(200, { ok: true, lead: publicLead(row) }, origin);
+      }
+
+      if (request.method === 'GET' && url.pathname === '/api/whatsapp-lines') {
+        if (!env.DB) return json(503, { error: 'Base D1 no conectada.' }, origin);
+        const tenant = tenantOf(request, env);
+        const result = await env.DB.prepare('SELECT number FROM whatsapp_lines WHERE tenant = ? AND active = 1 ORDER BY id').bind(tenant.id).all();
+        const numbers = ((result.results || []) as Array<{ number: string }>).map((row) => String(row.number || '')).filter(Boolean);
+        return json(200, { ok: true, numbers }, origin);
+      }
+
+      if (request.method === 'GET' && url.pathname === '/api/whatsapp-lines/admin') {
+        if (!env.DB) return json(503, { error: 'Base D1 no conectada.' }, origin);
+        const tenant = tenantOf(request, env);
+        const result = await env.DB.prepare('SELECT * FROM whatsapp_lines WHERE tenant = ? ORDER BY id').bind(tenant.id).all();
+        return json(200, { ok: true, lines: ((result.results || []) as Array<{ id: number; number: string; active: number; label: string | null; created_at: string }>).map(publicWhatsAppLine) }, origin);
+      }
+
+      if (request.method === 'POST' && url.pathname === '/api/whatsapp-lines') {
+        if (!env.DB) return json(503, { error: 'Base D1 no conectada.' }, origin);
+        const body = await readJson(request);
+        const tenant = tenantOf(request, env, body);
+        const number = normalizeWhatsAppLine(body.number || body.phone);
+        if (!number) return json(400, { error: 'Número inválido. Usá el formato 549… o 595…' }, origin);
+        const label = asText(body.label, 40);
+        const existing = await env.DB.prepare('SELECT * FROM whatsapp_lines WHERE tenant = ? AND number = ?').bind(tenant.id, number).first() as { id: number } | null;
+        if (existing?.id) {
+          if (label) await env.DB.prepare('UPDATE whatsapp_lines SET active = 1, label = ? WHERE id = ?').bind(label, existing.id).run();
+          else await env.DB.prepare('UPDATE whatsapp_lines SET active = 1 WHERE id = ?').bind(existing.id).run();
+        } else {
+          await env.DB.prepare('INSERT INTO whatsapp_lines (tenant, number, active, label, created_at) VALUES (?, ?, 1, ?, ?)').bind(tenant.id, number, label || null, nowIso()).run();
+        }
+        const row = await env.DB.prepare('SELECT * FROM whatsapp_lines WHERE tenant = ? AND number = ?').bind(tenant.id, number).first() as { id: number; number: string; active: number; label: string | null; created_at: string };
+        return json(200, { ok: true, line: publicWhatsAppLine(row) }, origin);
+      }
+
+      if (request.method === 'PATCH' && url.pathname === '/api/whatsapp-lines') {
+        if (!env.DB) return json(503, { error: 'Base D1 no conectada.' }, origin);
+        const body = await readJson(request);
+        const tenant = tenantOf(request, env, body);
+        const id = Number(body.id);
+        if (!Number.isInteger(id) || id <= 0) return json(400, { error: 'Falta el id de la línea.' }, origin);
+        const row = await env.DB.prepare('SELECT * FROM whatsapp_lines WHERE id = ? AND tenant = ?').bind(id, tenant.id).first() as { id: number } | null;
+        if (!row) return json(404, { error: 'Línea no encontrada.' }, origin);
+        const active = body.active === false || body.active === 0 || body.active === '0' ? 0 : 1;
+        await env.DB.prepare('UPDATE whatsapp_lines SET active = ? WHERE id = ?').bind(active, id).run();
+        const updated = await env.DB.prepare('SELECT * FROM whatsapp_lines WHERE id = ?').bind(id).first() as { id: number; number: string; active: number; label: string | null; created_at: string };
+        return json(200, { ok: true, line: publicWhatsAppLine(updated) }, origin);
       }
 
       return json(404, { error: 'Ruta no encontrada.' }, origin);
