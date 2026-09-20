@@ -167,7 +167,7 @@ async function findLead(db: D1Database, code: string, tenant?: TenantId): Promis
   let row: LeadRow | null = null;
   if (tenant) {
     row = await db.prepare(
-      'SELECT * FROM leads WHERE tenant = ? AND (CAST(id AS TEXT) = ? OR ref = ? OR legacy_ref = ?) ORDER BY id DESC LIMIT 1',
+      'SELECT * FROM leads WHERE tenant = ? AND (CAST(rowid AS TEXT) = ? OR ref = ? OR legacy_ref = ?) ORDER BY rowid DESC LIMIT 1',
     ).bind(tenant, raw, raw, letter || raw).first() as LeadRow | null;
   }
   if (!row && isPersonId(raw)) row = await getLeadById(db, Number(raw));
