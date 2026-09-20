@@ -596,7 +596,7 @@ export function buildStats(
   const pending = arrived.filter((row) => !row.purchase_enviado).length;
   const totalMonto = periodPurchases.reduce((sum, row) => sum + Number(row.monto || 0), 0);
   const average = periodPurchases.length ? totalMonto / periodPurchases.length : 0;
-  const conversionCount = timeZone === PY_TZ ? periodPurchases.length : loadedCount;
+  const conversionCount = periodPurchases.length;
   const conversion = arrived.length ? Math.round((conversionCount / arrived.length) * 1000) / 10 : 0;
 
   const counts = new Map<string, { arrived: number; loaded: number; charges: number }>();
@@ -633,7 +633,7 @@ export function buildStats(
         loaded: current.loaded,
         charges: current.charges,
         conversion: current.arrived
-          ? Math.round(((timeZone === PY_TZ ? current.charges : current.loaded) / current.arrived) * 1000) / 10
+          ? Math.round((current.charges / current.arrived) * 1000) / 10
           : 0,
       });
     }
@@ -648,7 +648,7 @@ export function buildStats(
         loaded: current.loaded,
         charges: current.charges,
         conversion: current.arrived
-          ? Math.round(((timeZone === PY_TZ ? current.charges : current.loaded) / current.arrived) * 1000) / 10
+          ? Math.round((current.charges / current.arrived) * 1000) / 10
           : 0,
       });
     }
@@ -674,7 +674,7 @@ function metaBrand(env: MetaEnv): string {
 }
 
 export const PURCHASE_LEAD_JOIN =
-  'FROM purchases p INNER JOIN leads l ON (l.ref = p.ref OR CAST(l.id AS TEXT) = p.ref OR CAST(l.rowid AS TEXT) = p.ref)';
+  'FROM purchases p INNER JOIN leads l ON (l.ref = p.ref OR CAST(l.rowid AS TEXT) = p.ref)';
 
 export function purchaseEventId(code: string): string {
   return 'purchase_' + code + '_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);

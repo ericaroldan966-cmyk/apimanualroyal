@@ -709,8 +709,8 @@ const server = http.createServer(async (req, res) => {
     }
 
     send(res, 404, { error: 'Ruta no encontrada.' }, origin);
-  } catch {
-    console.log('[api] Error interno');
+  } catch (err) {
+    console.log('[api] Error interno', err instanceof Error ? err.message : err);
     send(res, 500, { error: 'Error interno.' }, origin);
   }
 });

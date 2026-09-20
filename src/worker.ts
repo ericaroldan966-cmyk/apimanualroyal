@@ -647,8 +647,8 @@ export default {
       }
 
       return json(404, { error: 'Ruta no encontrada.' }, origin);
-    } catch {
-      console.log('[api] Error interno');
+    } catch (err) {
+      console.log('[api] Error interno', err instanceof Error ? err.message : err);
       return json(500, { error: 'Error interno.' }, origin);
     }
   },
