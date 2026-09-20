@@ -259,6 +259,7 @@ export function normalizeWhatsAppLine(value: unknown): string {
   if (digits.startsWith('00')) digits = digits.slice(2);
   if (digits.startsWith('549') && digits.length >= 12 && digits.length <= 15) return digits;
   if (digits.startsWith('595') && digits.length >= 11 && digits.length <= 15) return digits;
+  if (digits.length === 11 && digits.startsWith('9')) return '54' + digits;
   if (digits.length === 10 && digits.startsWith('11')) return '549' + digits;
   if (digits.length === 9 && digits.startsWith('9')) return '595' + digits;
   return '';
