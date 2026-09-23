@@ -183,8 +183,8 @@ export function tenantConfig(id: TenantId, env: TenantEnvSource = {}): TenantCon
       currency: 'PYG',
       meta: {
         META_BRAND: 'PARAGUAY',
-        PIXEL_ID: env.PARAGUAY_PIXEL_ID || PIXEL_ID,
-        PIXEL_ID_2: env.PARAGUAY_PIXEL_ID_2 || '',
+        PIXEL_ID: env.PARAGUAY_PIXEL_ID || '1075060428238436',
+        PIXEL_ID_2: env.PARAGUAY_PIXEL_ID_2 || '1075060428238436',
         META_ACCESS_TOKEN: env.PARAGUAY_META_ACCESS_TOKEN || env.META_ACCESS_TOKEN || '',
         META_ACCESS_TOKEN_2: env.PARAGUAY_META_ACCESS_TOKEN_2 || env.META_ACCESS_TOKEN_2 || '',
         META_TEST_EVENT_CODE: testCode,
