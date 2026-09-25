@@ -40,6 +40,7 @@ assert(tableColumns(db, 'whatsapp_lines').includes('number'), 'pending 0008 shou
 assert(first.includes('0008_whatsapp_lines.sql'), '0008 should be recorded');
 assert(first.includes('0009_fantastico_whatsapp_lines.sql'), '0009 should seed Fantastico live lines');
 assert(first.includes('0010_drop_old_fantastico_line.sql'), '0010 should drop the old Fantastico 9549 line');
+assert(first.includes('0011_paraguay_bigwin_line.sql'), '0011 should keep Paraguay on the BigWin R1 line');
 const royalLines = db.prepare("SELECT COUNT(*) AS n FROM whatsapp_lines WHERE tenant = 'royal'").get() as { n: number };
 const kovaLines = db.prepare("SELECT COUNT(*) AS n FROM whatsapp_lines WHERE tenant = 'kova'").get() as { n: number };
 const fantLines = db.prepare("SELECT number, active, label FROM whatsapp_lines WHERE tenant = 'fantastico' ORDER BY id").all() as Array<{ number: string; active: number; label: string }>;
@@ -49,6 +50,10 @@ assert(kovaLines.n === 4, 'kova seed should load live numbers');
 assert(fantLines.length === 5, 'fantastico should only keep the 5 principal lines');
 assert(fantLines.map((row) => row.number).join(',') === '5491178916874,5492235482370,5491178879763,5491176755150,5491176755153', 'fantastico numbers match live principals');
 assert(oldFant.n === 0, 'old 9549 should be removed from Fantastico');
+const pyLines = db.prepare("SELECT number, active, label FROM whatsapp_lines WHERE tenant = 'paraguay' ORDER BY id").all() as Array<{ number: string; active: number; label: string }>;
+assert(pyLines.length === 1, 'paraguay should only keep the BigWin R1 line');
+assert(pyLines[0]?.number === '5491165760027', 'paraguay WhatsApp is R1 0027');
+assert(pyLines[0]?.active === 1, 'paraguay R1 stays active');
 
 assert(normalizeWhatsAppLine('5491125689335') === '5491125689335', 'AR line stays digits');
 assert(normalizeWhatsAppLine('91178916874') === '5491178916874', 'AR mobile without 54 gets country code');
