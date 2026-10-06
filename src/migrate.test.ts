@@ -41,19 +41,16 @@ assert(first.includes('0008_whatsapp_lines.sql'), '0008 should be recorded');
 assert(first.includes('0009_fantastico_whatsapp_lines.sql'), '0009 should seed Fantastico live lines');
 assert(first.includes('0010_drop_old_fantastico_line.sql'), '0010 should drop the old Fantastico 9549 line');
 assert(first.includes('0011_paraguay_bigwin_line.sql'), '0011 should keep Paraguay on the BigWin R1 line');
-const royalLines = db.prepare("SELECT COUNT(*) AS n FROM whatsapp_lines WHERE tenant = 'royal'").get() as { n: number };
-const kovaLines = db.prepare("SELECT COUNT(*) AS n FROM whatsapp_lines WHERE tenant = 'kova'").get() as { n: number };
+assert(first.includes('0012_route_4064.sql'), '0012 should route Royal, Kova and Paraguay to 4064');
 const fantLines = db.prepare("SELECT number, active, label FROM whatsapp_lines WHERE tenant = 'fantastico' ORDER BY id").all() as Array<{ number: string; active: number; label: string }>;
 const oldFant = db.prepare("SELECT COUNT(*) AS n FROM whatsapp_lines WHERE tenant = 'fantastico' AND number = '5491133449549'").get() as { n: number };
-assert(royalLines.n === 4, 'royal seed should load live numbers');
-assert(kovaLines.n === 4, 'kova seed should load live numbers');
 assert(fantLines.length === 5, 'fantastico should only keep the 5 principal lines');
 assert(fantLines.map((row) => row.number).join(',') === '5491178916874,5492235482370,5491178879763,5491176755150,5491176755153', 'fantastico numbers match live principals');
 assert(oldFant.n === 0, 'old 9549 should be removed from Fantastico');
-const pyLines = db.prepare("SELECT number, active, label FROM whatsapp_lines WHERE tenant = 'paraguay' ORDER BY id").all() as Array<{ number: string; active: number; label: string }>;
-assert(pyLines.length === 1, 'paraguay should only keep the BigWin R1 line');
-assert(pyLines[0]?.number === '5491165760027', 'paraguay WhatsApp is R1 0027');
-assert(pyLines[0]?.active === 1, 'paraguay R1 stays active');
+for (const tenant of ['royal', 'kova', 'paraguay'] as const) {
+  const active = db.prepare('SELECT number FROM whatsapp_lines WHERE tenant = ? AND active = 1').all(tenant) as Array<{ number: string }>;
+  assert(active.length === 1 && active[0]?.number === '5491134264064', tenant + ' should route only to 4064');
+}
 
 assert(normalizeWhatsAppLine('5491125689335') === '5491125689335', 'AR line stays digits');
 assert(normalizeWhatsAppLine('91178916874') === '5491178916874', 'AR mobile without 54 gets country code');
