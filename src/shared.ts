@@ -112,6 +112,13 @@ function hostOf(value: string): string {
   }
 }
 
+export function absoluteSiteUrl(value: string, fallback: string): string {
+  const raw = String(value || fallback || '').trim();
+  if (!raw) return '';
+  const withScheme = /^https?:\/\//i.test(raw) ? raw : 'https://' + raw.replace(/^\/+/, '');
+  return withScheme.replace(/\/$/, '');
+}
+
 export function resolveTenantId(input: {
   bodyTenant?: unknown;
   headerTenant?: unknown;
@@ -177,16 +184,17 @@ export function tenantConfig(id: TenantId, env: TenantEnvSource = {}): TenantCon
     };
   }
   if (id === 'paraguay') {
+    const pyPixel = String(env.PARAGUAY_PIXEL_ID || '').trim();
     return {
       id,
-      landingUrl: (env.PARAGUAY_LANDING_URL || DEFAULT_PARAGUAY_LANDING_URL).replace(/\/$/, ''),
+      landingUrl: absoluteSiteUrl(env.PARAGUAY_LANDING_URL || '', DEFAULT_PARAGUAY_LANDING_URL),
       currency: 'PYG',
       meta: {
         META_BRAND: 'PARAGUAY',
-        PIXEL_ID: env.PARAGUAY_PIXEL_ID || '1461742502530875',
-        PIXEL_ID_2: env.PARAGUAY_PIXEL_ID_2 || '',
-        META_ACCESS_TOKEN: env.PARAGUAY_META_ACCESS_TOKEN || env.META_ACCESS_TOKEN || '',
-        META_ACCESS_TOKEN_2: env.PARAGUAY_META_ACCESS_TOKEN_2 || env.META_ACCESS_TOKEN_2 || '',
+        PIXEL_ID: /^\d{5,20}$/.test(pyPixel) ? pyPixel : '1461742502530875',
+        PIXEL_ID_2: '',
+        META_ACCESS_TOKEN: env.PARAGUAY_META_ACCESS_TOKEN || '',
+        META_ACCESS_TOKEN_2: '',
         META_TEST_EVENT_CODE: testCode,
       },
     };
