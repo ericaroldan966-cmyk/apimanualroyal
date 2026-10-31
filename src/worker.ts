@@ -501,6 +501,14 @@ export default {
         }
         const alreadyHadPurchase = Boolean(lead.purchase_enviado);
         const code = publicCode(lead);
+        if (tenant.id === 'paraguay' && alreadyHadPurchase) {
+          const same = await env.DB.prepare(
+            'SELECT event_id, monto, created_at FROM purchases WHERE ref = ? AND ABS(monto - ?) < 0.01 ORDER BY created_at DESC LIMIT 1',
+          ).bind(code, monto).first() as { event_id: string; monto: number; created_at: string } | null;
+          if (same) {
+            return json(409, { error: 'Compra ya registrada', already: true, ref: code, monto, event_id: same.event_id, fecha_purchase: same.created_at }, origin);
+          }
+        }
         const eventId = purchaseEventId(code);
         const created = nowIso();
         await env.DB.prepare(`

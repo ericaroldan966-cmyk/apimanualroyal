@@ -666,6 +666,15 @@ const server = http.createServer(async (req, res) => {
       }
       const alreadyHadPurchase = Boolean(lead.purchase_enviado);
       const code = publicCode(lead);
+      if (tenant.id === 'paraguay' && alreadyHadPurchase) {
+        const same = db.prepare(
+          'SELECT event_id, monto, created_at FROM purchases WHERE ref = ? AND ABS(monto - ?) < 0.01 ORDER BY created_at DESC LIMIT 1',
+        ).get(code, monto) as { event_id: string; monto: number; created_at: string } | undefined;
+        if (same) {
+          send(res, 409, { error: 'Compra ya registrada', already: true, ref: code, monto, event_id: same.event_id, fecha_purchase: same.created_at }, origin);
+          return;
+        }
+      }
       const eventId = purchaseEventId(code);
       const created = nowIso();
       db.prepare(`
