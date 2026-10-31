@@ -43,6 +43,11 @@ assert(first.includes('0010_drop_old_fantastico_line.sql'), '0010 should drop th
 assert(first.includes('0011_paraguay_bigwin_line.sql'), '0011 should keep Paraguay on the BigWin R1 line');
 assert(first.includes('0012_route_4064.sql'), '0012 should route Royal, Kova and Paraguay to 4064');
 assert(first.includes('0013_paraguay_lines.sql'), '0013 should leave Paraguay on the five lines');
+assert(first.includes('0014_ad_spend_fx_ars.sql'), '0014 should add the ARS quote columns');
+assert(tableColumns(db, 'ad_spend').includes('fx_ars') && tableColumns(db, 'ad_spend').includes('fx_kind'), 'ad spend keeps an ARS quote beside the existing fx');
+db.prepare('INSERT INTO ad_spend (tenant, day, usd, fx, updated_at) VALUES (?, ?, ?, ?, ?)').run('paraguay', '2026-10-31', 25, 7300, '2026-10-31T00:00:00.000Z');
+const kept = db.prepare('SELECT usd, fx, fx_ars, fx_kind FROM ad_spend WHERE tenant = ? AND day = ?').get('paraguay', '2026-10-31') as { usd: number; fx: number; fx_ars: number; fx_kind: string };
+assert(kept.usd === 25 && kept.fx === 7300 && kept.fx_ars === 0 && kept.fx_kind === '', 'old spend rows keep their fx and start without an ARS quote');
 const fantLines = db.prepare("SELECT number, active, label FROM whatsapp_lines WHERE tenant = 'fantastico' ORDER BY id").all() as Array<{ number: string; active: number; label: string }>;
 const oldFant = db.prepare("SELECT COUNT(*) AS n FROM whatsapp_lines WHERE tenant = 'fantastico' AND number = '5491133449549'").get() as { n: number };
 assert(fantLines.length === 5, 'fantastico should only keep the 5 principal lines');

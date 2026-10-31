@@ -7,7 +7,7 @@
     "dev": "node --experimental-strip-types src/local-server.ts",
     "start": "node --experimental-strip-types src/local-server.ts",
     "migrate": "node --experimental-strip-types src/migrate.ts",
-    "test": "node --experimental-strip-types src/send-meta-event.test.ts && node --experimental-strip-types src/migrate.test.ts"
+    "test": "node --experimental-strip-types src/send-meta-event.test.ts && node --experimental-strip-types src/migrate.test.ts && node --experimental-strip-types src/profit.test.ts"
   },
   "engines": {
     "node": ">=22"

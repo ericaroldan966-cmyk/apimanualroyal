@@ -47,6 +47,16 @@ import {
   type TenantConfig,
   type TenantId,
 } from './shared.ts';
+import { fetchArsQuote, type ArsQuote } from './fx-ars.ts';
+import {
+  PROJECT_NAMES,
+  PROJECTS,
+  buildProjectProfit,
+  metricsWindow,
+  type ProfitLead,
+  type ProfitPurchase,
+  type ProfitSpend,
+} from './profit.ts';
 
 const PORT = Number(process.env.PORT || process.env.LOCAL_API_PORT || 8787);
 const HOST = process.env.HOST || '0.0.0.0';
@@ -79,6 +89,45 @@ function openDatabase(): void {
   console.log('[API] db ready');
   setTimeout(() => { void retryStuckPurchases(); }, 4000);
   setInterval(() => { void retryStuckPurchases(); }, 30000);
+}
+
+function adminToken(req: http.IncomingMessage): string {
+  const header = String(req.headers.authorization || '');
+  const token = header.startsWith('Bearer ') ? header.slice(7).trim() : '';
+  if (!token || token.length > 200) return '';
+  const row = db.prepare('SELECT expires_at FROM sessions WHERE token = ?').get(token) as { expires_at: string } | undefined;
+  if (!row || new Date(row.expires_at).getTime() <= Date.now()) return '';
+  return token;
+}
+
+const quoteCache = new Map<string, ArsQuote & { at: number }>();
+
+async function cachedArsQuote(kind: 'oficial' | 'blue', day: string): Promise<ArsQuote | null> {
+  const key = kind + ':' + day;
+  const cached = quoteCache.get(key);
+  if (cached && Date.now() - cached.at < 6 * 60 * 60 * 1000) return cached;
+  const quote = await fetchArsQuote(kind, day);
+  if (!quote) return null;
+  quoteCache.set(key, { ...quote, at: Date.now() });
+  return quote;
+}
+
+function profitSource(tenant: TenantId): { leads: ProfitLead[]; purchases: ProfitPurchase[]; spend: (from: string, to: string) => ProfitSpend[] } {
+  const leads = db.prepare('SELECT ref, created_at, landing_url FROM leads WHERE tenant = ?').all(tenant) as ProfitLead[];
+  const purchases = db.prepare(
+    'SELECT p.ref AS ref, p.monto AS monto, p.created_at AS created_at, p.meta_status AS meta_status ' +
+      PURCHASE_LEAD_JOIN +
+      ' WHERE l.tenant = ? GROUP BY p.id',
+  ).all(tenant) as ProfitPurchase[];
+  return {
+    leads,
+    purchases,
+    spend(from: string, to: string) {
+      return db.prepare(
+        'SELECT day, usd, fx_ars, fx_kind FROM ad_spend WHERE tenant = ? AND day >= ? AND day <= ? ORDER BY day',
+      ).all(tenant, from, to) as ProfitSpend[];
+    },
+  };
 }
 
 function tenantOf(req: http.IncomingMessage, url: URL, body?: Record<string, unknown>): TenantConfig {
@@ -881,6 +930,131 @@ const server = http.createServer(async (req, res) => {
       }
       db.prepare('DELETE FROM whatsapp_lines WHERE id = ? AND tenant = ?').run(id, tenant.id);
       send(res, 200, { ok: true }, origin);
+      return;
+    }
+
+    if (url.pathname === '/api/metrics' || url.pathname === '/api/metrics/quote' || url.pathname === '/api/metrics/spend') {
+      if (!adminToken(req)) {
+        send(res, 401, { error: 'Esta sección es solo para administradores.' }, origin);
+        return;
+      }
+    }
+
+    if (req.method === 'GET' && url.pathname === '/api/metrics/quote') {
+      const kind = url.searchParams.get('kind') === 'blue' ? 'blue' : url.searchParams.get('kind') === 'oficial' ? 'oficial' : '';
+      const day = String(url.searchParams.get('day') || '');
+      if (!kind || !isYmd(day)) {
+        send(res, 400, { error: 'Elegí oficial o blue, y una fecha.' }, origin);
+        return;
+      }
+      const quote = await cachedArsQuote(kind, day);
+      if (!quote) {
+        send(res, 502, { error: 'No pude consultar el dólar. Podés cargar la cotización a mano.' }, origin);
+        return;
+      }
+      send(res, 200, { ok: true, kind: quote.kind, venta: quote.venta, fecha: quote.fecha, requested_day: quote.requested_day }, origin);
+      return;
+    }
+
+    if (req.method === 'GET' && url.pathname === '/api/metrics') {
+      const requested = String(url.searchParams.get('project') || 'paraguay');
+      const ids = requested === 'all' ? [...PROJECTS] : PROJECTS.filter((id) => id === requested);
+      if (!ids.length) {
+        send(res, 400, { error: 'Proyecto inválido.' }, origin);
+        return;
+      }
+      const range = String(url.searchParams.get('range') || 'today');
+      const reports = [];
+      for (const id of ids) {
+        const window = metricsWindow({
+          range,
+          from: String(url.searchParams.get('from') || ''),
+          to: String(url.searchParams.get('to') || ''),
+          timeZone: statsTimezone(id),
+        });
+        if ('error' in window) {
+          send(res, 400, { error: window.error }, origin);
+          return;
+        }
+        const source = profitSource(id);
+        reports.push(buildProjectProfit({
+          tenant: id,
+          from: window.from,
+          to: window.to,
+          leads: source.leads,
+          purchases: source.purchases,
+          spend: source.spend(window.from, window.to),
+          env: process.env,
+        }));
+      }
+      send(res, 200, {
+        ok: true,
+        projects: PROJECTS.map((id) => ({
+          id,
+          name: PROJECT_NAMES[id],
+          landing: tenantConfig(id, process.env).landingUrl,
+        })),
+        reports,
+      }, origin);
+      return;
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/metrics/spend') {
+      const body = await readBody(req);
+      const tenant = parseTenant(body.project || body.tenant);
+      const day = String(body.day || '');
+      const usd = Number(body.usd);
+      const kindRaw = String(body.fx_kind || '');
+      const kind = kindRaw === 'oficial' || kindRaw === 'blue' || kindRaw === 'manual' ? kindRaw : '';
+      let fxArs = Number(body.fx_ars);
+      if (!tenant) {
+        send(res, 400, { error: 'Elegí el proyecto.' }, origin);
+        return;
+      }
+      if (!isYmd(day)) {
+        send(res, 400, { error: 'Fecha inválida.' }, origin);
+        return;
+      }
+      if (!Number.isFinite(usd) || usd < 0) {
+        send(res, 400, { error: 'Ingresá el gasto en dólares.' }, origin);
+        return;
+      }
+      if (!kind) {
+        send(res, 400, { error: 'Elegí dólar oficial, blue o una cotización manual.' }, origin);
+        return;
+      }
+      let storedKind = kind;
+      let quoteFecha = '';
+      if (kind === 'manual') {
+        if (!(fxArs > 0)) {
+          send(res, 400, { error: 'Ingresá la cotización en pesos.' }, origin);
+          return;
+        }
+      } else if (!(fxArs > 0)) {
+        const quote = await cachedArsQuote(kind, day);
+        if (!quote) {
+          send(res, 502, { error: 'No pude consultar el dólar. Cargá la cotización a mano.' }, origin);
+          return;
+        }
+        fxArs = quote.venta;
+        quoteFecha = quote.fecha;
+      } else {
+        const quote = await cachedArsQuote(kind, day);
+        quoteFecha = quote?.fecha || '';
+        if (quote && Math.abs(quote.venta - fxArs) >= 0.01) storedKind = 'manual';
+      }
+      const savedAt = nowIso();
+      db.prepare(`
+        INSERT INTO ad_spend (tenant, day, usd, fx, fx_ars, fx_kind, updated_at)
+        VALUES (?, ?, ?, 0, ?, ?, ?)
+        ON CONFLICT(tenant, day) DO UPDATE SET
+          usd = excluded.usd,
+          fx_ars = excluded.fx_ars,
+          fx_kind = excluded.fx_kind,
+          updated_at = excluded.updated_at
+      `).run(tenant, day, Math.round(usd * 100) / 100, Math.round(fxArs * 100) / 100, storedKind, savedAt);
+      const row = db.prepare('SELECT day, usd, fx, fx_ars, fx_kind, updated_at FROM ad_spend WHERE tenant = ? AND day = ?').get(tenant, day);
+      send(res, 200, { ok: true, project: tenant, quote_fecha: quoteFecha, spend: row }, origin);
       return;
     }
 
