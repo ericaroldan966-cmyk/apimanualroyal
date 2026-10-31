@@ -53,10 +53,11 @@ const oldFant = db.prepare("SELECT COUNT(*) AS n FROM whatsapp_lines WHERE tenan
 assert(fantLines.length === 5, 'fantastico should only keep the 5 principal lines');
 assert(fantLines.map((row) => row.number).join(',') === '5491178916874,5492235482370,5491178879763,5491176755150,5491176755153', 'fantastico numbers match live principals');
 assert(oldFant.n === 0, 'old 9549 should be removed from Fantastico');
-for (const tenant of ['royal', 'kova'] as const) {
-  const active = db.prepare('SELECT number FROM whatsapp_lines WHERE tenant = ? AND active = 1').all(tenant) as Array<{ number: string }>;
-  assert(active.length === 1 && active[0]?.number === '5491134264064', tenant + ' should route only to 4064');
-}
+assert(first.includes('0015_royal_lines.sql'), '0015 should leave Royal on the three new lines');
+const royalLines = db.prepare("SELECT number FROM whatsapp_lines WHERE tenant = 'royal' ORDER BY id").all() as Array<{ number: string }>;
+assert(royalLines.map((row) => row.number).join(',') === '5491125189009,5491168716471,5491125189268', 'royal should only keep the three lines');
+const kovaActive = db.prepare("SELECT number FROM whatsapp_lines WHERE tenant = 'kova' AND active = 1").all() as Array<{ number: string }>;
+assert(kovaActive.length === 1 && kovaActive[0]?.number === '5491134264064', 'kova should route only to 4064');
 const pyLines = db.prepare("SELECT number FROM whatsapp_lines WHERE tenant = 'paraguay' AND active = 1 ORDER BY id").all() as Array<{ number: string }>;
 const pyOld = db.prepare("SELECT COUNT(*) AS n FROM whatsapp_lines WHERE tenant = 'paraguay' AND number NOT IN ('5491168571780','5491125193334','5491168572036','5491168716683','5491125584915')").get() as { n: number };
 assert(pyLines.map((row) => row.number).join(',') === '5491168571780,5491125193334,5491168572036,5491168716683,5491125584915', 'paraguay should only keep the five lines');
