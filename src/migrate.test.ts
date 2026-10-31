@@ -42,15 +42,20 @@ assert(first.includes('0009_fantastico_whatsapp_lines.sql'), '0009 should seed F
 assert(first.includes('0010_drop_old_fantastico_line.sql'), '0010 should drop the old Fantastico 9549 line');
 assert(first.includes('0011_paraguay_bigwin_line.sql'), '0011 should keep Paraguay on the BigWin R1 line');
 assert(first.includes('0012_route_4064.sql'), '0012 should route Royal, Kova and Paraguay to 4064');
+assert(first.includes('0013_paraguay_lines.sql'), '0013 should leave Paraguay on the five lines');
 const fantLines = db.prepare("SELECT number, active, label FROM whatsapp_lines WHERE tenant = 'fantastico' ORDER BY id").all() as Array<{ number: string; active: number; label: string }>;
 const oldFant = db.prepare("SELECT COUNT(*) AS n FROM whatsapp_lines WHERE tenant = 'fantastico' AND number = '5491133449549'").get() as { n: number };
 assert(fantLines.length === 5, 'fantastico should only keep the 5 principal lines');
 assert(fantLines.map((row) => row.number).join(',') === '5491178916874,5492235482370,5491178879763,5491176755150,5491176755153', 'fantastico numbers match live principals');
 assert(oldFant.n === 0, 'old 9549 should be removed from Fantastico');
-for (const tenant of ['royal', 'kova', 'paraguay'] as const) {
+for (const tenant of ['royal', 'kova'] as const) {
   const active = db.prepare('SELECT number FROM whatsapp_lines WHERE tenant = ? AND active = 1').all(tenant) as Array<{ number: string }>;
   assert(active.length === 1 && active[0]?.number === '5491134264064', tenant + ' should route only to 4064');
 }
+const pyLines = db.prepare("SELECT number FROM whatsapp_lines WHERE tenant = 'paraguay' AND active = 1 ORDER BY id").all() as Array<{ number: string }>;
+const pyOld = db.prepare("SELECT COUNT(*) AS n FROM whatsapp_lines WHERE tenant = 'paraguay' AND number NOT IN ('5491168571780','5491125193334','5491168572036','5491168716683','5491125584915')").get() as { n: number };
+assert(pyLines.map((row) => row.number).join(',') === '5491168571780,5491125193334,5491168572036,5491168716683,5491125584915', 'paraguay should only keep the five lines');
+assert(pyOld.n === 0, 'paraguay should drop 4064 and older lines');
 
 assert(normalizeWhatsAppLine('5491125689335') === '5491125689335', 'AR line stays digits');
 assert(normalizeWhatsAppLine('91178916874') === '5491178916874', 'AR mobile without 54 gets country code');
