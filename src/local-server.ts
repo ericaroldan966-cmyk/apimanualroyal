@@ -52,6 +52,7 @@ import {
   PROJECT_NAMES,
   PROJECTS,
   buildProjectProfit,
+  foreignRefMessage,
   metricsWindow,
   type ProfitLead,
   type ProfitPurchase,
@@ -244,6 +245,14 @@ function asLead(row: unknown): LeadRow | null {
 
 function getLeadById(id: number): LeadRow | null {
   return asLead(db.prepare('SELECT rowid, * FROM leads WHERE rowid = ?').get(id));
+}
+
+function elsewhereMessage(code: string, current: TenantId): string {
+  const raw = unwrapDisplayCode(code);
+  if (!isPersonId(raw)) return '';
+  const row = getLeadById(Number(raw));
+  if (!row || leadTenant(row) === current) return '';
+  return foreignRefMessage(leadTenant(row), current);
 }
 
 function getLeadByRef(ref: string): LeadRow | null {
@@ -685,7 +694,7 @@ const server = http.createServer(async (req, res) => {
       if (!row) row = findLead(q, tenant.id);
       if (!row) {
         console.log(refLog(tenant.id), 'not found', searchRef || q);
-        send(res, 404, { error: 'Código no encontrado' }, origin);
+        send(res, 404, { error: elsewhereMessage(searchRef || q, tenant.id) || 'Código no encontrado' }, origin);
         return;
       }
       console.log(refLog(tenant.id), 'found', row.ref);
@@ -710,7 +719,7 @@ const server = http.createServer(async (req, res) => {
       const lead = findLead(ref, tenant.id);
       if (!lead) {
         console.log('[purchase] Código no encontrado');
-        send(res, 404, { error: 'Código no encontrado.' }, origin);
+        send(res, 404, { error: elsewhereMessage(ref, tenant.id) || 'Código no encontrado.' }, origin);
         return;
       }
       const alreadyHadPurchase = Boolean(lead.purchase_enviado);

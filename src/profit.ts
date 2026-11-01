@@ -9,6 +9,12 @@ export const PROJECT_NAMES: Record<TenantId, string> = {
   fantastico: 'Fantástico',
 };
 
+export function foreignRefMessage(owner: TenantId, current: TenantId): string {
+  if (owner === current) return '';
+  const name = PROJECT_NAMES[owner];
+  return 'Ese REF pertenece a ' + name + '. Abrí el panel de ' + name + ' para cargarlo.';
+}
+
 export type ProfitLead = {
   ref: string;
   created_at: string;

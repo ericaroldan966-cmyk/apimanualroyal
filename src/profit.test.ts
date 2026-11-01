@@ -1,5 +1,5 @@
 import { fetchArsQuote, readArsQuote, shiftCalendarDay } from './fx-ars.ts';
-import { buildProjectProfit, metricsWindow } from './profit.ts';
+import { buildProjectProfit, foreignRefMessage, metricsWindow } from './profit.ts';
 
 const failures: string[] = [];
 function assert(condition: unknown, message: string): void {
@@ -74,6 +74,8 @@ const royal = buildProjectProfit({
   purchases: [{ ref: '10', monto: 1, created_at: '2026-10-30T12:00:00.000Z', meta_status: 'ok' }],
   spend: [],
 });
+assert(foreignRefMessage('kova', 'royal') === 'Ese REF pertenece a Kova. Abrí el panel de Kova para cargarlo.', 'a foreign REF names its project');
+assert(foreignRefMessage('royal', 'royal') === '', 'the same project is not foreign');
 assert(royal.totals.customers === 1 && royal.currency === 'ARS' && royal.id === 'royal', 'Royal stays a separate project');
 assert(report.totals.customers === 2, 'Paraguay customers were not mixed with Royal');
 
