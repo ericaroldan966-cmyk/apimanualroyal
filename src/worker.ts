@@ -70,6 +70,9 @@ type Env = {
 
 const hits = new Map<string, number[]>();
 
+/** Cloudflare Workers runtime; kept local so Node typecheck still works. */
+type WorkerExecutionContext = { waitUntil(promise: Promise<unknown>): void };
+
 function allowedOrigin(request: Request, env: Env): string {
   const incoming = request.headers.get('Origin') || '';
   if (isLocalOrigin(incoming)) return incoming;
@@ -311,7 +314,7 @@ async function readJson(request: Request): Promise<Record<string, unknown>> {
 }
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: WorkerExecutionContext): Promise<Response> {
     const origin = allowedOrigin(request, env);
     const url = new URL(request.url);
 
@@ -412,7 +415,7 @@ export default {
         if (lead.lead_enviado || lead.lead_sent_at) {
           console.log('[lead] Lead omitido, ya enviado');
           if (!lead.lead_enviado) {
-            void sendMetaEvent(tenant.meta, {
+            ctx.waitUntil(sendMetaEvent(tenant.meta, {
               event_name: 'Lead',
               event_id: lead.lead_event_id || eventId,
               event_source_url: lead.landing_url || tenant.landingUrl,
@@ -433,7 +436,7 @@ export default {
                 nowIso(),
                 lead.ref,
               ).run();
-            });
+            }));
           }
           return json(200, { ok: true, ref: code, id: lead.id, a: Number(lead.ad) || 0, event_id: lead.lead_event_id || eventId, already_sent: true, tenant: tenant.id }, origin);
         }
@@ -446,7 +449,7 @@ export default {
             lead_sent_at = COALESCE(lead_sent_at, ?)
           WHERE ref = ?
         `).bind(sentAt, eventId, sentAt, lead.ref).run();
-        void sendMetaEvent(tenant.meta, {
+        ctx.waitUntil(sendMetaEvent(tenant.meta, {
           event_name: 'Lead',
           event_id: eventId,
           event_source_url: lead.landing_url || tenant.landingUrl,
@@ -468,7 +471,7 @@ export default {
             lead.ref,
           ).run();
           console.log('[lead] Lead pixel1_ok=' + String(meta.pixel1_ok) + ' pixel2_ok=' + String(meta.pixel2_ok) + (meta.ok ? '' : ' :: ' + metaFailureMessage(meta)));
-        });
+        }));
         return json(200, {
           ok: true,
           ref: code,
