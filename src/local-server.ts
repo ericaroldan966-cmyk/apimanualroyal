@@ -39,7 +39,6 @@ import {
   statsTimezone,
   tenantConfig,
   metaFailureMessage,
-  metaPixelPayload,
   normalizeWhatsAppLine,
   type Attribution,
   type LeadRow,
@@ -613,48 +612,78 @@ const server = http.createServer(async (req, res) => {
         user_data: visitorData,
         custom_data: {},
       });
-      if (lead.lead_enviado) {
+      // Count in the panel as soon as the CTA fires — do not wait for Meta.
+      // Same pattern as /api/purchase: persist first, send CAPI in background.
+      if (lead.lead_enviado || lead.lead_sent_at) {
         console.log('[lead] Lead omitido, ya enviado');
         send(res, 200, { ok: true, ref: code, id: lead.id, a: Number(lead.ad) || 0, event_id: lead.lead_event_id || eventId, already_sent: true, tenant: tenant.id }, origin);
+        if (!lead.lead_enviado) {
+          void sendMetaEvent(tenant.meta, {
+            event_name: 'Lead',
+            event_id: lead.lead_event_id || eventId,
+            event_source_url: lead.landing_url || tenant.landingUrl,
+            user_data: visitorData,
+            custom_data: {},
+          }).then((meta) => {
+            db.prepare(`
+              UPDATE leads SET
+                lead_enviado = ?,
+                lead_events_received = ?,
+                lead_meta_error = ?,
+                updated_at = ?
+              WHERE ref = ?
+            `).run(
+              (meta.pixel1_ok || meta.pixel2_ok) ? 1 : 0,
+              meta.events_received == null ? null : meta.events_received,
+              meta.ok ? null : metaFailureMessage(meta),
+              nowIso(),
+              lead.ref,
+            );
+          });
+        }
         return;
       }
-      const meta = await sendMetaEvent(tenant.meta, {
-        event_name: 'Lead',
-        event_id: eventId,
-        event_source_url: lead.landing_url || tenant.landingUrl,
-        user_data: visitorData,
-        custom_data: {},
-      });
+      const sentAt = nowIso();
       db.prepare(`
         UPDATE leads SET
           updated_at = ?,
           status = CASE WHEN status = 'PURCHASE' THEN status ELSE 'LEAD' END,
-          lead_enviado = ?,
           lead_event_id = ?,
-          lead_sent_at = ?,
-          lead_events_received = ?,
-          lead_meta_error = ?
+          lead_sent_at = COALESCE(lead_sent_at, ?)
         WHERE ref = ?
-      `).run(
-        nowIso(),
-        (meta.pixel1_ok || meta.pixel2_ok) ? 1 : 0,
-        eventId,
-        nowIso(),
-        meta.events_received == null ? null : meta.events_received,
-        meta.ok ? null : metaFailureMessage(meta),
-        lead.ref,
-      );
-      console.log('[lead] Lead pixel1_ok=' + String(meta.pixel1_ok) + ' pixel2_ok=' + String(meta.pixel2_ok) + (meta.ok ? '' : ' :: ' + metaFailureMessage(meta)));
+      `).run(sentAt, eventId, sentAt, lead.ref);
       send(res, 200, {
         ok: true,
         ref: code,
         id: lead.id,
         a: Number(lead.ad) || 0,
         event_id: eventId,
-        events_received: meta.events_received,
+        saved: true,
         tenant: tenant.id,
-        ...metaPixelPayload(meta),
       }, origin);
+      void sendMetaEvent(tenant.meta, {
+        event_name: 'Lead',
+        event_id: eventId,
+        event_source_url: lead.landing_url || tenant.landingUrl,
+        user_data: visitorData,
+        custom_data: {},
+      }).then((meta) => {
+        db.prepare(`
+          UPDATE leads SET
+            lead_enviado = ?,
+            lead_events_received = ?,
+            lead_meta_error = ?,
+            updated_at = ?
+          WHERE ref = ?
+        `).run(
+          (meta.pixel1_ok || meta.pixel2_ok) ? 1 : 0,
+          meta.events_received == null ? null : meta.events_received,
+          meta.ok ? null : metaFailureMessage(meta),
+          nowIso(),
+          lead.ref,
+        );
+        console.log('[lead] Lead pixel1_ok=' + String(meta.pixel1_ok) + ' pixel2_ok=' + String(meta.pixel2_ok) + (meta.ok ? '' : ' :: ' + metaFailureMessage(meta)));
+      });
       return;
     }
 

@@ -31,7 +31,6 @@ import {
   statsTimezone,
   tenantConfig,
   metaFailureMessage,
-  metaPixelPayload,
   normalizeWhatsAppLine,
   type Attribution,
   type MetaSendResult,
@@ -70,6 +69,9 @@ type Env = {
 };
 
 const hits = new Map<string, number[]>();
+
+/** Cloudflare Workers runtime; kept local so Node typecheck still works. */
+type WorkerExecutionContext = { waitUntil(promise: Promise<unknown>): void };
 
 function allowedOrigin(request: Request, env: Env): string {
   const incoming = request.headers.get('Origin') || '';
@@ -312,7 +314,7 @@ async function readJson(request: Request): Promise<Record<string, unknown>> {
 }
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: WorkerExecutionContext): Promise<Response> {
     const origin = allowedOrigin(request, env);
     const url = new URL(request.url);
 
@@ -408,46 +410,76 @@ export default {
           user_data: visitorData,
           custom_data: {},
         });
-        if (lead.lead_enviado) {
+        // Count in the panel as soon as the CTA fires — do not wait for Meta.
+        // Same pattern as /api/purchase: persist first, send CAPI in background.
+        if (lead.lead_enviado || lead.lead_sent_at) {
           console.log('[lead] Lead omitido, ya enviado');
+          if (!lead.lead_enviado) {
+            ctx.waitUntil(sendMetaEvent(tenant.meta, {
+              event_name: 'Lead',
+              event_id: lead.lead_event_id || eventId,
+              event_source_url: lead.landing_url || tenant.landingUrl,
+              user_data: visitorData,
+              custom_data: {},
+            }).then(async (meta) => {
+              await env.DB.prepare(`
+                UPDATE leads SET
+                  lead_enviado = ?,
+                  lead_events_received = ?,
+                  lead_meta_error = ?,
+                  updated_at = ?
+                WHERE ref = ?
+              `).bind(
+                (meta.pixel1_ok || meta.pixel2_ok) ? 1 : 0,
+                meta.events_received == null ? null : meta.events_received,
+                meta.ok ? null : metaFailureMessage(meta),
+                nowIso(),
+                lead.ref,
+              ).run();
+            }));
+          }
           return json(200, { ok: true, ref: code, id: lead.id, a: Number(lead.ad) || 0, event_id: lead.lead_event_id || eventId, already_sent: true, tenant: tenant.id }, origin);
         }
-        const meta = await sendMetaEvent(tenant.meta, {
+        const sentAt = nowIso();
+        await env.DB.prepare(`
+          UPDATE leads SET
+            updated_at = ?,
+            status = CASE WHEN status = 'PURCHASE' THEN status ELSE 'LEAD' END,
+            lead_event_id = ?,
+            lead_sent_at = COALESCE(lead_sent_at, ?)
+          WHERE ref = ?
+        `).bind(sentAt, eventId, sentAt, lead.ref).run();
+        ctx.waitUntil(sendMetaEvent(tenant.meta, {
           event_name: 'Lead',
           event_id: eventId,
           event_source_url: lead.landing_url || tenant.landingUrl,
           user_data: visitorData,
           custom_data: {},
-        });
-        await env.DB.prepare(`
-          UPDATE leads SET
-            updated_at = ?,
-            status = CASE WHEN status = 'PURCHASE' THEN status ELSE 'LEAD' END,
-            lead_enviado = ?,
-            lead_event_id = ?,
-            lead_sent_at = ?,
-            lead_events_received = ?,
-            lead_meta_error = ?
-          WHERE ref = ?
-        `).bind(
-          nowIso(),
-          (meta.pixel1_ok || meta.pixel2_ok) ? 1 : 0,
-          eventId,
-          nowIso(),
-          meta.events_received == null ? null : meta.events_received,
-          meta.ok ? null : metaFailureMessage(meta),
-          lead.ref,
-        ).run();
-        console.log('[lead] Lead pixel1_ok=' + String(meta.pixel1_ok) + ' pixel2_ok=' + String(meta.pixel2_ok) + (meta.ok ? '' : ' :: ' + metaFailureMessage(meta)));
+        }).then(async (meta) => {
+          await env.DB.prepare(`
+            UPDATE leads SET
+              lead_enviado = ?,
+              lead_events_received = ?,
+              lead_meta_error = ?,
+              updated_at = ?
+            WHERE ref = ?
+          `).bind(
+            (meta.pixel1_ok || meta.pixel2_ok) ? 1 : 0,
+            meta.events_received == null ? null : meta.events_received,
+            meta.ok ? null : metaFailureMessage(meta),
+            nowIso(),
+            lead.ref,
+          ).run();
+          console.log('[lead] Lead pixel1_ok=' + String(meta.pixel1_ok) + ' pixel2_ok=' + String(meta.pixel2_ok) + (meta.ok ? '' : ' :: ' + metaFailureMessage(meta)));
+        }));
         return json(200, {
           ok: true,
           ref: code,
           id: lead.id,
           a: Number(lead.ad) || 0,
           event_id: eventId,
-          events_received: meta.events_received,
+          saved: true,
           tenant: tenant.id,
-          ...metaPixelPayload(meta),
         }, origin);
       }
 
