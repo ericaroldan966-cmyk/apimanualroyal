@@ -60,6 +60,9 @@ const royal4064 = db.prepare("SELECT COUNT(*) AS n FROM whatsapp_lines WHERE ten
 assert(royal4064.n === 0, 'royal must not keep cancelled line 4064');
 assert(first.includes('0016_drop_stale_royal_lines.sql'), '0016 should drop stale Royal lines including 4064');
 assert(first.includes('0017_block_royal_4064.sql'), '0017 should re-purge Royal 4064');
+assert(first.includes('0018_block_royal_5339.sql'), '0018 should purge Royal 5339');
+const royal5339 = db.prepare("SELECT COUNT(*) AS n FROM whatsapp_lines WHERE tenant = 'royal' AND number = '5491165525339'").get() as { n: number };
+assert(royal5339.n === 0, 'royal must not keep cancelled line 5339');
 const kovaActive = db.prepare("SELECT number FROM whatsapp_lines WHERE tenant = 'kova' AND active = 1").all() as Array<{ number: string }>;
 assert(kovaActive.length === 1 && kovaActive[0]?.number === '5491134264064', 'kova should route only to 4064');
 const pyLines = db.prepare("SELECT number FROM whatsapp_lines WHERE tenant = 'paraguay' AND active = 1 ORDER BY id").all() as Array<{ number: string }>;
@@ -95,6 +98,7 @@ assert(pickSearchRef('Hola, quiero más información. REF-\u206047 quiero mi ben
 assert(unwrapDisplayCode('REF-\u206047') === '47', 'unwrap drops the WhatsApp word joiner');
 assert(royalWhatsAppBlocked('royal', '5491134264064'), 'royal blocks cancelled 4064');
 assert(royalWhatsAppBlocked('royal', '+54 9 11 3426-4064'), 'royal blocks 4064 with formatting');
+assert(royalWhatsAppBlocked('royal', '5491165525339'), 'royal blocks cancelled 5339');
 assert(!royalWhatsAppBlocked('kova', '5491134264064'), 'kova may still use 4064');
 assert(!royalWhatsAppBlocked('royal', '5491166226807'), 'royal keeps other lines');
 

@@ -12,12 +12,13 @@ export const TENANTS = ['royal', 'kova', 'fantastico', 'paraguay'] as const;
 export type TenantId = (typeof TENANTS)[number];
 
 /** Cancelled Royal WhatsApp destinations — never serve or re-activate. */
-export const BLOCKED_ROYAL_WHATSAPP = new Set(['5491134264064']);
+export const BLOCKED_ROYAL_WHATSAPP = new Set(['5491134264064', '5491165525339']);
 
 export function royalWhatsAppBlocked(tenant: TenantId, number: string): string | null {
   const digits = String(number || '').replace(/\D/g, '');
   if (tenant === 'royal' && BLOCKED_ROYAL_WHATSAPP.has(digits)) {
-    return 'Esa línea (4064) está cancelada para Royal y no se puede usar.';
+    const tail = digits.slice(-4);
+    return 'Esa línea (' + tail + ') está cancelada para Royal y no se puede usar.';
   }
   return null;
 }
