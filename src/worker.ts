@@ -32,6 +32,8 @@ import {
   tenantConfig,
   metaFailureMessage,
   normalizeWhatsAppLine,
+  BLOCKED_ROYAL_WHATSAPP,
+  royalWhatsAppBlocked,
   type Attribution,
   type MetaSendResult,
   type LeadRow,
@@ -722,7 +724,10 @@ export default {
         if (!env.DB) return json(503, { error: 'Base D1 no conectada.' }, origin);
         const tenant = tenantOf(request, env);
         const result = await env.DB.prepare('SELECT number FROM whatsapp_lines WHERE tenant = ? AND active = 1 ORDER BY id').bind(tenant.id).all();
-        const numbers = ((result.results || []) as Array<{ number: string }>).map((row) => String(row.number || '')).filter(Boolean);
+        const numbers = ((result.results || []) as Array<{ number: string }>)
+          .map((row) => String(row.number || ''))
+          .filter(Boolean)
+          .filter((number) => !(tenant.id === 'royal' && BLOCKED_ROYAL_WHATSAPP.has(normalizeWhatsAppLine(number))));
         return json(200, { ok: true, numbers }, origin);
       }
 
@@ -730,7 +735,10 @@ export default {
         if (!env.DB) return json(503, { error: 'Base D1 no conectada.' }, origin);
         const tenant = tenantOf(request, env);
         const result = await env.DB.prepare('SELECT * FROM whatsapp_lines WHERE tenant = ? ORDER BY id').bind(tenant.id).all();
-        return json(200, { ok: true, lines: ((result.results || []) as Array<{ id: number; number: string; active: number; label: string | null; created_at: string }>).map(publicWhatsAppLine) }, origin);
+        const lines = ((result.results || []) as Array<{ id: number; number: string; active: number; label: string | null; created_at: string }>)
+          .filter((row) => !(tenant.id === 'royal' && BLOCKED_ROYAL_WHATSAPP.has(normalizeWhatsAppLine(row.number))))
+          .map(publicWhatsAppLine);
+        return json(200, { ok: true, lines }, origin);
       }
 
       if (request.method === 'POST' && url.pathname === '/api/whatsapp-lines') {
@@ -739,6 +747,8 @@ export default {
         const tenant = tenantOf(request, env, body);
         const number = normalizeWhatsAppLine(body.number || body.phone);
         if (!number) return json(400, { error: 'Número inválido. Usá el formato 549… o 595…' }, origin);
+        const blocked = royalWhatsAppBlocked(tenant.id, number);
+        if (blocked) return json(400, { error: blocked }, origin);
         const label = asText(body.label, 40);
         const existing = await env.DB.prepare('SELECT * FROM whatsapp_lines WHERE tenant = ? AND number = ?').bind(tenant.id, number).first() as { id: number } | null;
         if (existing?.id) {
@@ -757,9 +767,13 @@ export default {
         const tenant = tenantOf(request, env, body);
         const id = Number(body.id);
         if (!Number.isInteger(id) || id <= 0) return json(400, { error: 'Falta el id de la línea.' }, origin);
-        const row = await env.DB.prepare('SELECT * FROM whatsapp_lines WHERE id = ? AND tenant = ?').bind(id, tenant.id).first() as { id: number } | null;
+        const row = await env.DB.prepare('SELECT * FROM whatsapp_lines WHERE id = ? AND tenant = ?').bind(id, tenant.id).first() as { id: number; number?: string } | null;
         if (!row) return json(404, { error: 'Línea no encontrada.' }, origin);
         const active = body.active === false || body.active === 0 || body.active === '0' ? 0 : 1;
+        if (active) {
+          const blocked = royalWhatsAppBlocked(tenant.id, String(row.number || ''));
+          if (blocked) return json(400, { error: blocked }, origin);
+        }
         await env.DB.prepare('UPDATE whatsapp_lines SET active = ? WHERE id = ?').bind(active, id).run();
         const updated = await env.DB.prepare('SELECT * FROM whatsapp_lines WHERE id = ?').bind(id).first() as { id: number; number: string; active: number; label: string | null; created_at: string };
         return json(200, { ok: true, line: publicWhatsAppLine(updated) }, origin);

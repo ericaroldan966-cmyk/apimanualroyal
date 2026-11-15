@@ -40,6 +40,8 @@ import {
   tenantConfig,
   metaFailureMessage,
   normalizeWhatsAppLine,
+  BLOCKED_ROYAL_WHATSAPP,
+  royalWhatsAppBlocked,
   type Attribution,
   type LeadRow,
   type MetaSendResult,
@@ -157,10 +159,14 @@ function listWhatsAppLines(tenant: TenantId, activeOnly: boolean) {
   const rows = activeOnly
     ? db.prepare('SELECT * FROM whatsapp_lines WHERE tenant = ? AND active = 1 ORDER BY id').all(tenant)
     : db.prepare('SELECT * FROM whatsapp_lines WHERE tenant = ? ORDER BY id').all(tenant);
-  return (rows as Array<{ id: number; number: string; active: number; label: string | null; created_at: string }>).map(publicWhatsAppLine);
+  return (rows as Array<{ id: number; number: string; active: number; label: string | null; created_at: string }>)
+    .filter((row) => !(tenant === 'royal' && BLOCKED_ROYAL_WHATSAPP.has(normalizeWhatsAppLine(row.number))))
+    .map(publicWhatsAppLine);
 }
 
 function upsertWhatsAppLine(tenant: TenantId, number: string, label: string) {
+  const blocked = royalWhatsAppBlocked(tenant, number);
+  if (blocked) throw new Error(blocked);
   const existing = db.prepare('SELECT * FROM whatsapp_lines WHERE tenant = ? AND number = ?').get(tenant, number) as
     | { id: number; number: string; active: number; label: string | null; created_at: string }
     | undefined;
@@ -904,8 +910,11 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === 'GET' && url.pathname === '/api/whatsapp-lines') {
       const tenant = tenantOf(req, url);
-      const lines = listWhatsAppLines(tenant.id, true);
-      send(res, 200, { ok: true, numbers: lines.map((line) => line?.number).filter(Boolean) }, origin);
+      const lines = listWhatsAppLines(tenant.id, true)
+        .map((line) => line?.number)
+        .filter((number): number is string => Boolean(number))
+        .filter((number) => !(tenant.id === 'royal' && BLOCKED_ROYAL_WHATSAPP.has(normalizeWhatsAppLine(number))));
+      send(res, 200, { ok: true, numbers: lines }, origin);
       return;
     }
 
@@ -923,9 +932,18 @@ const server = http.createServer(async (req, res) => {
         send(res, 400, { error: 'Número inválido. Usá el formato 549… o 595…' }, origin);
         return;
       }
+      const blocked = royalWhatsAppBlocked(tenant.id, number);
+      if (blocked) {
+        send(res, 400, { error: blocked }, origin);
+        return;
+      }
       const label = asText(body.label, 40);
-      const line = upsertWhatsAppLine(tenant.id, number, label);
-      send(res, 200, { ok: true, line }, origin);
+      try {
+        const line = upsertWhatsAppLine(tenant.id, number, label);
+        send(res, 200, { ok: true, line }, origin);
+      } catch (error) {
+        send(res, 400, { error: error instanceof Error ? error.message : 'No se pudo guardar la línea.' }, origin);
+      }
       return;
     }
 
@@ -945,6 +963,13 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       const active = body.active === false || body.active === 0 || body.active === '0' ? 0 : 1;
+      if (active) {
+        const blocked = royalWhatsAppBlocked(tenant.id, row.number);
+        if (blocked) {
+          send(res, 400, { error: blocked }, origin);
+          return;
+        }
+      }
       db.prepare('UPDATE whatsapp_lines SET active = ? WHERE id = ?').run(active, id);
       const updated = db.prepare('SELECT * FROM whatsapp_lines WHERE id = ?').get(id) as typeof row;
       send(res, 200, { ok: true, line: publicWhatsAppLine(updated) }, origin);
