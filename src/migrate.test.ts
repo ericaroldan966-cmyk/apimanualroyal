@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { MIGRATIONS_DIR, runMigrations, tableColumns } from './migrate.ts';
-import { absoluteSiteUrl, normalizeWhatsAppLine, pickSearchRef, tenantConfig, unwrapDisplayCode } from './shared.ts';
+import { absoluteSiteUrl, normalizeWhatsAppLine, pickSearchRef, royalWhatsAppBlocked, tenantConfig, unwrapDisplayCode } from './shared.ts';
 
 const failures: string[] = [];
 function assert(condition: unknown, message: string): void {
@@ -59,6 +59,7 @@ assert(royalLines.map((row) => row.number).join(',') === '5491125189009,54911687
 const royal4064 = db.prepare("SELECT COUNT(*) AS n FROM whatsapp_lines WHERE tenant = 'royal' AND number = '5491134264064'").get() as { n: number };
 assert(royal4064.n === 0, 'royal must not keep cancelled line 4064');
 assert(first.includes('0016_drop_stale_royal_lines.sql'), '0016 should drop stale Royal lines including 4064');
+assert(first.includes('0017_block_royal_4064.sql'), '0017 should re-purge Royal 4064');
 const kovaActive = db.prepare("SELECT number FROM whatsapp_lines WHERE tenant = 'kova' AND active = 1").all() as Array<{ number: string }>;
 assert(kovaActive.length === 1 && kovaActive[0]?.number === '5491134264064', 'kova should route only to 4064');
 const pyLines = db.prepare("SELECT number FROM whatsapp_lines WHERE tenant = 'paraguay' AND active = 1 ORDER BY id").all() as Array<{ number: string }>;
@@ -92,6 +93,10 @@ assert(!normalizeWhatsAppLine('12345'), 'short junk is not a WhatsApp line');
 assert(pickSearchRef('REF-47') === '47', 'REF-47 is the person id');
 assert(pickSearchRef('Hola, quiero más información. REF-\u206047 quiero mi beneficio') === '47', 'WhatsApp word-joiner REF still searches');
 assert(unwrapDisplayCode('REF-\u206047') === '47', 'unwrap drops the WhatsApp word joiner');
+assert(royalWhatsAppBlocked('royal', '5491134264064'), 'royal blocks cancelled 4064');
+assert(royalWhatsAppBlocked('royal', '+54 9 11 3426-4064'), 'royal blocks 4064 with formatting');
+assert(!royalWhatsAppBlocked('kova', '5491134264064'), 'kova may still use 4064');
+assert(!royalWhatsAppBlocked('royal', '5491166226807'), 'royal keeps other lines');
 
 const second = runMigrations(db);
 assert(second.join(',') === first.join(','), 'a second boot should not re-run migrations');
