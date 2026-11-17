@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { MIGRATIONS_DIR, runMigrations, tableColumns } from './migrate.ts';
-import { absoluteSiteUrl, normalizeWhatsAppLine, pickSearchRef, royalWhatsAppBlocked, tenantConfig, unwrapDisplayCode } from './shared.ts';
+import { absoluteSiteUrl, isStableFbp, normalizeWhatsAppLine, pickSearchRef, royalWhatsAppBlocked, tenantConfig, unwrapDisplayCode } from './shared.ts';
 
 const failures: string[] = [];
 function assert(condition: unknown, message: string): void {
@@ -101,6 +101,9 @@ assert(!royalWhatsAppBlocked('royal', '5491134264064'), 'royal may use restored 
 assert(royalWhatsAppBlocked('royal', '5491165525339'), 'royal blocks cancelled 5339');
 assert(!royalWhatsAppBlocked('kova', '5491134264064'), 'kova may still use 4064');
 assert(!royalWhatsAppBlocked('royal', '5491166226807'), 'royal keeps other lines');
+assert(isStableFbp('fb.1.1234567890.abcdef'), 'real _fbp cookies are stable twins');
+assert(!isStableFbp(''), 'empty fbp must not twin across clients');
+assert(!isStableFbp('short'), 'tiny fbp values must not twin');
 
 const second = runMigrations(db);
 assert(second.join(',') === first.join(','), 'a second boot should not re-run migrations');

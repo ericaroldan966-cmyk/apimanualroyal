@@ -42,6 +42,7 @@ import {
   normalizeWhatsAppLine,
   BLOCKED_ROYAL_WHATSAPP,
   royalWhatsAppBlocked,
+  isStableFbp,
   type Attribution,
   type LeadRow,
   type MetaSendResult,
@@ -287,22 +288,17 @@ function findLead(code: string, tenant?: TenantId): LeadRow | null {
   return row;
 }
 
-function insertLead(attr: Attribution, status: string, tenant: TenantId, ip = '', userAgent = ''): LeadRow {
+function insertLead(attr: Attribution, status: string, tenant: TenantId, _ip = '', _userAgent = ''): LeadRow {
   const created = nowIso();
   const temp = 'TMP-' + randomBytes(8).toString('hex');
   db.exec('BEGIN IMMEDIATE');
   try {
-    const since = new Date(Date.now() - 15000).toISOString();
+    // One stable _fbp → one REF per tenant. Never merge by IP/UA (that crossed clients).
     let twin: LeadRow | null = null;
-    if (attr.fbp) {
+    if (isStableFbp(attr.fbp)) {
       twin = asLead(db.prepare(
-        'SELECT rowid, * FROM leads WHERE tenant = ? AND fbp = ? AND created_at >= ? ORDER BY rowid DESC LIMIT 1',
-      ).get(tenant, attr.fbp, since));
-    }
-    if (!twin && ip && userAgent) {
-      twin = asLead(db.prepare(
-        'SELECT rowid, * FROM leads WHERE tenant = ? AND client_ip = ? AND user_agent = ? AND created_at >= ? ORDER BY rowid DESC LIMIT 1',
-      ).get(tenant, ip, userAgent, since));
+        'SELECT rowid, * FROM leads WHERE tenant = ? AND fbp = ? ORDER BY rowid DESC LIMIT 1',
+      ).get(tenant, attr.fbp));
     }
     if (twin) {
       const updated = updateAttribution(twin, mergeAttribution(twin, attr));

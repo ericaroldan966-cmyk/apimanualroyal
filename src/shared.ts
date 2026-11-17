@@ -14,6 +14,15 @@ export type TenantId = (typeof TENANTS)[number];
 /** Cancelled Royal WhatsApp destinations — never serve or re-activate. */
 export const BLOCKED_ROYAL_WHATSAPP = new Set(['5491165525339']);
 
+/**
+ * Same browser (_fbp) must keep the same REF forever within a tenant.
+ * Do NOT twin by IP/UA: shared Wi‑Fi would hand one REF to two clients.
+ */
+export function isStableFbp(value: unknown): boolean {
+  const fbp = String(value || '').trim();
+  return fbp.length >= 8;
+}
+
 export function royalWhatsAppBlocked(tenant: TenantId, number: string): string | null {
   const digits = String(number || '').replace(/\D/g, '');
   if (tenant === 'royal' && BLOCKED_ROYAL_WHATSAPP.has(digits)) {
