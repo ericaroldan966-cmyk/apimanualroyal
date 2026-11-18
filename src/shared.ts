@@ -12,7 +12,7 @@ export const TENANTS = ['royal', 'kova', 'fantastico', 'paraguay'] as const;
 export type TenantId = (typeof TENANTS)[number];
 
 /** Cancelled Royal WhatsApp destinations — never serve or re-activate. */
-export const BLOCKED_ROYAL_WHATSAPP = new Set(['5491165525339']);
+export const BLOCKED_ROYAL_WHATSAPP = new Set<string>();
 
 /**
  * Same browser (_fbp) must keep the same REF forever within a tenant.
